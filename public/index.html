@@ -208,6 +208,19 @@
   .group.all-filtered { display: none; }
   .day-block { margin-bottom: 28px; }
   .compact .day-block { margin-bottom: 14px; }
+  .day-block:not(.active) .day-detail-groups { display: none; }
+  .day-block:not(.active) .day-block-heading { opacity: 0.7; }
+  .day-block:not(.active) .day-block-heading:hover { opacity: 1; }
+  .day-block:not(.active) .day-block-heading::after {
+    content: 'Click to view details';
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--text-dim);
+  }
+  .day-block.active .day-block-heading { color: var(--leave); }
   .day-jump-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); z-index: 5; padding-top: 4px; }
   .day-jump-btn {
     font-family: var(--font-mono); font-size: 12px; color: var(--text-muted);
@@ -349,6 +362,39 @@
   .compact .emp-name { font-size: 12px; }
   .emp-name { font-family: var(--font-display); font-weight: 600; font-size: 14px; }
   .mono-cell { color: var(--text-muted); }
+  td[data-label="Detail"] { white-space: nowrap; }
+
+  #scrollTopBtn {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--panel-2);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(8px);
+    transition: opacity .2s ease, transform .2s ease;
+    z-index: 50;
+  }
+  #scrollTopBtn.visible { opacity: 1; pointer-events: auto; transform: translateY(0); }
+  #scrollTopBtn:hover { transform: translateY(-2px); }
+  html.light #scrollTopBtn {
+    background: linear-gradient(135deg, #8139EE, #1679FA);
+    color: #FFFFFF;
+    border: none;
+    box-shadow: 0 4px 14px rgba(22, 121, 250, 0.3);
+  }
+  html.light #scrollTopBtn:hover { box-shadow: 0 6px 18px rgba(22, 121, 250, 0.38); }
 
   .footer-note { margin-top: 16px; font-size: 11px; color: var(--text-dim); line-height: 1.6; }
   .site-footer {
@@ -371,6 +417,11 @@
 </style>
 </head>
 <body>
+
+<button id="scrollTopBtn" aria-label="Scroll to top" title="Back to top">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+</button>
+
 
 <div class="wrap">
 
@@ -964,6 +1015,7 @@
       jumpBtn.className = 'day-jump-btn' + (isToday ? ' is-today' : '');
       jumpBtn.textContent = label + (isToday ? ' (Today)' : '');
       jumpBtn.addEventListener('click', function () {
+        setActiveDayBlock(dayResult.dateKey);
         var target = document.getElementById('day-block-' + dayResult.dateKey);
         if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
@@ -975,6 +1027,7 @@
       var dayBlock = document.createElement('div');
       dayBlock.className = 'day-block';
       dayBlock.id = 'day-block-' + dayResult.dateKey;
+      dayBlock.setAttribute('data-date-key', dayResult.dateKey);
 
       var dateObj = new Date(dayResult.dateKey + 'T00:00:00');
       var dayName = dateObj.toLocaleDateString('en-PH', { weekday: 'short' });
@@ -984,10 +1037,15 @@
       var heading = document.createElement('div');
       heading.className = 'day-block-heading';
       heading.innerHTML = fullDate + ' <span class="day-name">(' + dayName + ')' + (isToday ? ' · Today' : '') + '</span>';
+      // Clicking the heading itself also makes that day the active (full-detail) one —
+      // handy once you've scrolled past the jump nav.
+      heading.style.cursor = 'pointer';
+      heading.addEventListener('click', function () { setActiveDayBlock(dayResult.dateKey); });
       dayBlock.appendChild(heading);
 
       // Quick-scan row: small colored counts per status, so you can compare
       // several days at a glance without expanding every group underneath.
+      // This stays visible even for compact (non-active) days.
       var quickScan = document.createElement('div');
       quickScan.className = 'day-quick-scan';
       quickScan.innerHTML = STATUS_ORDER.map(function (status) {
@@ -1005,11 +1063,31 @@
       }).join('');
       dayBlock.appendChild(quickScan);
 
+      // Full per-category tables — only the active day shows these; other
+      // days stay compact (heading + quick-scan counts only) until clicked.
       var subContainer = document.createElement('div');
+      subContainer.className = 'day-detail-groups';
       dayBlock.appendChild(subContainer);
       renderGroups(dayResult.report, subContainer, { forceExpanded: true });
 
       container.appendChild(dayBlock);
+    });
+
+    // Today starts as the active (fully expanded) day; every other day
+    // starts compact. If there's no "today" in range (a past custom
+    // range, say), default to the most recent day instead.
+    var defaultActiveKey = todayKey;
+    if (!ordered.some(function (d) { return d.dateKey === todayKey; })) {
+      defaultActiveKey = ordered[0] ? ordered[0].dateKey : null;
+    }
+    if (defaultActiveKey) setActiveDayBlock(defaultActiveKey);
+  }
+
+  // Marks exactly one day-block as "active" (full detail tables shown);
+  // every other day-block collapses to its compact quick-scan summary.
+  function setActiveDayBlock(dateKey) {
+    document.querySelectorAll('.day-block').forEach(function (block) {
+      block.classList.toggle('active', block.getAttribute('data-date-key') === dateKey);
     });
   }
 
@@ -1243,6 +1321,19 @@
   } else {
     showSetup(true);
   }
+
+  // Scroll-to-top button — appears once scrolled down a bit, hidden near the top.
+  var scrollTopBtn = document.getElementById('scrollTopBtn');
+  window.addEventListener('scroll', function () {
+    if (window.scrollY > 400) {
+      scrollTopBtn.classList.add('visible');
+    } else {
+      scrollTopBtn.classList.remove('visible');
+    }
+  });
+  scrollTopBtn.addEventListener('click', function () {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
 </script>
 
 </body>
