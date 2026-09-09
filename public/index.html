@@ -349,7 +349,6 @@
   .compact .emp-name { font-size: 12px; }
   .emp-name { font-family: var(--font-display); font-weight: 600; font-size: 14px; }
   .mono-cell { color: var(--text-muted); }
-  td[data-label="Detail"] { white-space: pre-line; line-height: 1.5; }
 
   .footer-note { margin-top: 16px; font-size: 11px; color: var(--text-dim); line-height: 1.6; }
   .site-footer {
@@ -421,9 +420,9 @@
     <button id="saveSproutSettingsBtn">Save Settings</button>
 
     <div style="font-size: 11px; opacity: 0.6; margin-top: 14px; line-height: 1.5;">
-      These are saved on the server (not sent to or stored in your browser after saving) and used for every request to Sprout HR going forward. Leave a field blank to keep its current saved value unchanged.<br>
-      <strong>One-time setup, done here.</strong> These credentials are saved on the server, so they already apply automatically for everyone, on every device — no need to enter them again elsewhere. The <strong>Shift Board API URL</strong> (above) is different: that one is only saved in this specific browser, so it does need to be pasted in again if you open the dashboard on another device or browser.<br>
-      <strong>No login guards this page or this save action</strong> — anyone with this dashboard's URL can view this status and change these values.
+      Saved server-side, not in your browser — used for every Sprout HR request from here on. Leave a field blank to keep its current value.<br>
+      <strong>One-time setup:</strong> since these live on the server, they already work for everyone, on every device — no need to re-enter them elsewhere. The <strong>Shift Board API URL</strong> above works differently — it's saved per-browser, so that one does need re-pasting on another device or browser.<br>
+      <strong>No login protects this page</strong> — anyone with this dashboard's URL can view or change these values.
     </div>
   </div>
 
@@ -789,7 +788,11 @@
     if (!isoString) return null;
     var d = new Date(isoString);
     if (isNaN(d.getTime())) return isoString; // fall back to raw value rather than hide it
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    // Explicit Asia/Manila regardless of the viewer's own device/browser
+    // timezone — this data is inherently Philippines-local (that's where
+    // Sprout HR and the shifts themselves are), so it should read the
+    // same correct time whether checked from Manila or from abroad.
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'Asia/Manila' });
   }
 
   function formatLogTime(isoString) {
@@ -797,7 +800,7 @@
     var d = new Date(isoString);
     if (isNaN(d.getTime())) return null;
     // "9:00 AM" -> "9:00AM" to match the requested compact style
-    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).replace(' ', '');
+    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Manila' }).replace(' ', '');
   }
 
   function logNote(e) {
@@ -807,7 +810,7 @@
     // time matters, not just "something was logged."
     var inStr = formatLogTime(e.loginTime);
     var outStr = formatLogTime(e.logoutTime);
-    if (inStr && outStr) return 'IN: ' + inStr + '\nOUT: ' + outStr;
+    if (inStr && outStr) return 'IN: ' + inStr + '  ·  OUT: ' + outStr;
     if (inStr) return 'IN: ' + inStr;
     if (outStr) return 'OUT: ' + outStr;
     return null;

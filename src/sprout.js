@@ -326,9 +326,7 @@ function classifyEmployeeForDay(emp, dayContext) {
 
     let shiftHasEnded = false;
     if (shiftToStr) {
-      const [endH, endM] = shiftToStr.split(':').map(Number);
-      const shiftEnd = new Date(dayContext.dayDate);
-      shiftEnd.setHours(endH, endM, 0, 0);
+      const shiftEnd = manilaTimeOnDay(dayContext.dayKey, shiftToStr);
       shiftHasEnded = new Date() > shiftEnd;
     }
 
@@ -342,9 +340,7 @@ function classifyEmployeeForDay(emp, dayContext) {
     return { status: 'onTime', entry: { name, ...contactInfo, loginTime, logoutTime } };
   }
 
-  const [h, m] = shiftFromStr.split(':').map(Number);
-  const shiftStart = new Date(inTime);
-  shiftStart.setHours(h, m, 0, 0);
+  const shiftStart = manilaTimeOnDay(dayContext.dayKey, shiftFromStr);
   const lateMinutes = Math.round((inTime - shiftStart) / 60000);
   if (lateMinutes > 0) {
     return { status: 'presentButLate', entry: { name, ...contactInfo, loginTime, logoutTime, lateMinutes } };
@@ -357,10 +353,55 @@ function newEmptyReport() {
   return { late: [], presentButLate: [], onLeave: [], onTime: [], restDay: [], didNotReport: [] };
 }
 
+// Sprout returns timestamps as naive local Philippine time strings (no
+// UTC offset attached), and shift start/end times come from Sprout as
+// plain "HH:mm" strings with no date or timezone at all. The server this
+// code runs on isn't guaranteed to be in the Philippines timezone
+// (Codespaces, Azure, etc. commonly default to UTC) — parsing these
+// naive strings without being explicit about the timezone caused a real,
+// confirmed bug where displayed times were off by exactly 8 hours
+// (Manila's UTC offset from UTC). These helpers make every such parse
+// explicit about Asia/Manila, regardless of what timezone the server
+// process itself happens to be running in.
+function parseManilaDateTime(naiveDateTimeStr) {
+  if (!naiveDateTimeStr) return null;
+  // Sprout's timestamps are Manila wall-clock time regardless of what
+  // suffix (if any) they carry — a real, confirmed case showed a 'Z'
+  // suffix on a value that was actually local Manila time, not true UTC.
+  // Trusting a 'Z'/offset as accurate reproduced the exact same 8-hour
+  // bug this function was built to fix. So: strip any existing
+  // timezone marker and always apply +08:00 explicitly, rather than
+  // trusting whatever suffix (if any) is already there.
+  const stripped = naiveDateTimeStr.replace(/(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/i, '');
+  return new Date(`${stripped}+08:00`);
+}
+
+function manilaTimeOnDay(dayKey, hhmmStr) {
+  return parseManilaDateTime(`${dayKey}T${hhmmStr}:00`);
+}
+
+// Derives day-of-week purely from the calendar date string (already
+// correctly Manila-derived via formatDateKey), rather than calling
+// .getDay() on a Date object — which is server-local-timezone-dependent
+// and could return the wrong weekday for the same reason described
+// above. Anchoring at noon UTC on that date sidesteps any timezone edge
+// case entirely, since noon UTC is unambiguously the same calendar day
+// in every real-world timezone.
+function weekdayForDayKey(dayKey) {
+  return WEEKDAY_FIELDS[new Date(`${dayKey}T12:00:00Z`).getUTCDay()];
+}
+
 function formatDateKey(date) {
-  const y = date.getFullYear();
-  const mo = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
+  // Explicit Asia/Manila calendar date, regardless of the server's own
+  // runtime timezone — getFullYear/getMonth/getDate are otherwise
+  // server-local, which could misclassify a late-night Manila log (e.g.
+  // 12:30 AM) into the wrong calendar day entirely on a UTC server.
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(date);
+  const y = parts.find((p) => p.type === 'year').value;
+  const mo = parts.find((p) => p.type === 'month').value;
+  const d = parts.find((p) => p.type === 'day').value;
   return `${y}-${mo}-${d}`;
 }
 
@@ -371,10 +412,10 @@ function buildDayAttendanceIndex(allLogs, dayKey) {
   const firstInByBioId = {};
   const lastOutByBioId = {};
   allLogs.forEach((log) => {
-    const logDateKey = formatDateKey(new Date(log.logTime));
+    const logDateKey = formatDateKey(parseManilaDateTime(log.logTime));
     if (logDateKey !== dayKey) return;
     const bioId = log.bioEmpID;
-    const logTime = new Date(log.logTime);
+    const logTime = parseManilaDateTime(log.logTime);
     const modeStr = String(log.inOutMode).toLowerCase();
     const isIn = modeStr === 'in' || modeStr === '0';
     const isOut = modeStr === 'out' || modeStr === '1';
@@ -422,7 +463,7 @@ async function computeTodayReport() {
   const todayKey = formatDateKey(now);
   const dateFromISO = `${todayKey}T00:00:00`;
   const dateToISO = `${todayKey}T23:59:59`;
-  const todayWeekday = WEEKDAY_FIELDS[now.getDay()];
+  const todayWeekday = weekdayForDayKey(todayKey);
 
   const adjustmentSearchFrom = `${formatDateKey(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000))}T00:00:00`;
   const adjustmentSearchTo = `${formatDateKey(new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000))}T23:59:59`;
@@ -471,6 +512,7 @@ async function computeTodayReport() {
   const dayContext = {
     weekday: todayWeekday,
     dayDate: now,
+    dayKey: todayKey,
     firstInByBioId: attendanceIndex.firstInByBioId,
     lastOutByBioId: attendanceIndex.lastOutByBioId,
     leaveByEmployeeId: buildDayLeaveIndex(leaves, todayKey),
@@ -525,12 +567,13 @@ async function computeReportsBetweenDates(rangeStart, rangeEnd) {
 
   return dayDates.map((dayDate) => {
     const dayKey = formatDateKey(dayDate);
-    const weekday = WEEKDAY_FIELDS[dayDate.getDay()];
+    const weekday = weekdayForDayKey(dayKey);
     const attendanceIndex = buildDayAttendanceIndex(logs, dayKey);
 
     const dayContext = {
       weekday,
       dayDate,
+      dayKey,
       firstInByBioId: attendanceIndex.firstInByBioId,
       lastOutByBioId: attendanceIndex.lastOutByBioId,
       leaveByEmployeeId: buildDayLeaveIndex(leaves, dayKey),
