@@ -294,7 +294,7 @@ function classifyEmployeeForDay(emp, dayContext) {
   // flag. Sent as ISO strings so the frontend can format them in the
   // viewer's local time.
   const inTime = dayContext.firstInByBioId[bioId];
-  const outTime = dayContext.firstOutByBioId[bioId];
+  const outTime = dayContext.lastOutByBioId[bioId];
   const loginTime = inTime ? inTime.toISOString() : null;
   const logoutTime = outTime ? outTime.toISOString() : null;
 
@@ -320,7 +320,7 @@ function classifyEmployeeForDay(emp, dayContext) {
     if (outTime) {
       return {
         status: 'presentButLate',
-        entry: { name, ...contactInfo, lateMinutes: null, reason: 'missing log-in (has log-out)' }
+        entry: { name, ...contactInfo, loginTime, logoutTime, lateMinutes: null, reason: 'missing log-in (has log-out)' }
       };
     }
 
@@ -333,13 +333,13 @@ function classifyEmployeeForDay(emp, dayContext) {
     }
 
     if (shiftHasEnded) {
-      return { status: 'didNotReport', entry: { name, ...contactInfo, reason: 'no log-in or log-out, shift already ended' } };
+      return { status: 'didNotReport', entry: { name, ...contactInfo, loginTime, logoutTime, reason: 'no log-in or log-out, shift already ended' } };
     }
-    return { status: 'late', entry: { name, ...contactInfo, reason: 'no log-in yet, shift still ongoing' } };
+    return { status: 'late', entry: { name, ...contactInfo, loginTime, logoutTime, reason: 'no log-in yet, shift still ongoing' } };
   }
 
   if (!shiftFromStr) {
-    return { status: 'onTime', entry: { name, ...contactInfo, hasLogout: !!outTime } };
+    return { status: 'onTime', entry: { name, ...contactInfo, loginTime, logoutTime } };
   }
 
   const [h, m] = shiftFromStr.split(':').map(Number);
@@ -347,10 +347,10 @@ function classifyEmployeeForDay(emp, dayContext) {
   shiftStart.setHours(h, m, 0, 0);
   const lateMinutes = Math.round((inTime - shiftStart) / 60000);
   if (lateMinutes > 0) {
-    return { status: 'presentButLate', entry: { name, ...contactInfo, lateMinutes, hasLogout: !!outTime } };
+    return { status: 'presentButLate', entry: { name, ...contactInfo, loginTime, logoutTime, lateMinutes } };
   }
 
-  return { status: 'onTime', entry: { name, ...contactInfo, hasLogout: !!outTime } };
+  return { status: 'onTime', entry: { name, ...contactInfo, loginTime, logoutTime } };
 }
 
 function newEmptyReport() {
@@ -365,8 +365,11 @@ function formatDateKey(date) {
 }
 
 function buildDayAttendanceIndex(allLogs, dayKey) {
+  // First clock-in, LAST clock-out — someone with multiple taps in a day
+  // (e.g. a lunch-break out/in) should still show their real end-of-day
+  // time, not an early break checkout.
   const firstInByBioId = {};
-  const firstOutByBioId = {};
+  const lastOutByBioId = {};
   allLogs.forEach((log) => {
     const logDateKey = formatDateKey(new Date(log.logTime));
     if (logDateKey !== dayKey) return;
@@ -376,9 +379,9 @@ function buildDayAttendanceIndex(allLogs, dayKey) {
     const isIn = modeStr === 'in' || modeStr === '0';
     const isOut = modeStr === 'out' || modeStr === '1';
     if (isIn && (!firstInByBioId[bioId] || logTime < firstInByBioId[bioId])) firstInByBioId[bioId] = logTime;
-    if (isOut && (!firstOutByBioId[bioId] || logTime < firstOutByBioId[bioId])) firstOutByBioId[bioId] = logTime;
+    if (isOut && (!lastOutByBioId[bioId] || logTime > lastOutByBioId[bioId])) lastOutByBioId[bioId] = logTime;
   });
-  return { firstInByBioId, firstOutByBioId };
+  return { firstInByBioId, lastOutByBioId };
 }
 
 function buildDayLeaveIndex(allLeaves, dayKey) {
@@ -469,7 +472,7 @@ async function computeTodayReport() {
     weekday: todayWeekday,
     dayDate: now,
     firstInByBioId: attendanceIndex.firstInByBioId,
-    firstOutByBioId: attendanceIndex.firstOutByBioId,
+    lastOutByBioId: attendanceIndex.lastOutByBioId,
     leaveByEmployeeId: buildDayLeaveIndex(leaves, todayKey),
     adjustmentByEmployeeId: buildDayAdjustmentIndex(scheduleAdjustments, todayKey)
   };
@@ -529,7 +532,7 @@ async function computeReportsBetweenDates(rangeStart, rangeEnd) {
       weekday,
       dayDate,
       firstInByBioId: attendanceIndex.firstInByBioId,
-      firstOutByBioId: attendanceIndex.firstOutByBioId,
+      lastOutByBioId: attendanceIndex.lastOutByBioId,
       leaveByEmployeeId: buildDayLeaveIndex(leaves, dayKey),
       adjustmentByEmployeeId: buildDayAdjustmentIndex(scheduleAdjustments, dayKey)
     };

@@ -216,7 +216,7 @@
   }
   .day-jump-btn:hover { border-color: var(--text-dim); color: var(--text); }
   .day-jump-btn.is-today { color: var(--ontime); border-color: var(--ontime); background: var(--ontime-dim); }
-  .day-block-heading { font-family: var(--font-display); font-weight: 800; font-size: 16px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 10px; }
+  .day-block-heading { font-family: var(--font-display); font-weight: 800; font-size: 16px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 10px; position: sticky; top: 56px; background: var(--bg); z-index: 4; padding-top: 10px; }
   .compact .day-block-heading { font-size: 13px; margin-bottom: 6px; padding-bottom: 5px; }
   .day-block-heading .day-name { color: var(--text-dim); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
   .day-quick-scan { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
@@ -238,7 +238,7 @@
   .quick-pill.restday .quick-dot { background: var(--off); }
   .quick-delta { color: var(--text-dim); font-size: 10px; }
   .status-text { color: var(--text-dim); font-size: 11px; }
-  .settings-link { color: var(--text-dim); font-size: 11px; cursor: pointer; text-decoration: underline; }
+  .settings-link { color: var(--text-dim); font-size: 11px; font-weight: 700; cursor: pointer; text-decoration: underline; }
   #settingsLink { margin-left: auto; }
 
   .group { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; overflow: hidden; }
@@ -349,6 +349,7 @@
   .compact .emp-name { font-size: 12px; }
   .emp-name { font-family: var(--font-display); font-weight: 600; font-size: 14px; }
   .mono-cell { color: var(--text-muted); }
+  td[data-label="Detail"] { white-space: pre-line; line-height: 1.5; }
 
   .footer-note { margin-top: 16px; font-size: 11px; color: var(--text-dim); line-height: 1.6; }
   .site-footer {
@@ -389,6 +390,9 @@
     <div class="label">One-time setup: paste your Shift Board API URL</div>
     <input type="text" id="scriptUrlInput" placeholder="https://your-backend-host/api/shift-board">
     <button id="saveUrlBtn">Save &amp; Connect</button>
+    <div style="font-size: 11px; opacity: 0.6; margin-top: 12px;">
+      This is saved in this browser only — on another device or browser, you'll paste it in again. Your Sprout credentials are different: those are saved on the server and already work everywhere automatically.
+    </div>
   </div>
 
   <div class="banner error" id="errorBanner"></div>
@@ -404,7 +408,7 @@
   </div>
 
   <div class="setup-box" id="sproutSettingsPanel" style="display:none;">
-    <div class="label">Sprout HR credentials (saved on the server, not in this page's code)</div>
+    <div class="label">API credentials (saved on the server, not in this page's code)</div>
     <div id="sproutSettingsError" class="banner error" style="display:none;"></div>
     <div id="sproutSettingsSuccess" class="banner info" style="display:none;"></div>
 
@@ -418,6 +422,7 @@
 
     <div style="font-size: 11px; opacity: 0.6; margin-top: 14px; line-height: 1.5;">
       These are saved on the server (not sent to or stored in your browser after saving) and used for every request to Sprout HR going forward. Leave a field blank to keep its current saved value unchanged.<br>
+      <strong>One-time setup, done here.</strong> These credentials are saved on the server, so they already apply automatically for everyone, on every device — no need to enter them again elsewhere. The <strong>Shift Board API URL</strong> (above) is different: that one is only saved in this specific browser, so it does need to be pasted in again if you open the dashboard on another device or browser.<br>
       <strong>No login guards this page or this save action</strong> — anyone with this dashboard's URL can view this status and change these values.
     </div>
   </div>
@@ -791,7 +796,8 @@
     if (!isoString) return null;
     var d = new Date(isoString);
     if (isNaN(d.getTime())) return null;
-    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    // "9:00 AM" -> "9:00AM" to match the requested compact style
+    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).replace(' ', '');
   }
 
   function logNote(e) {
@@ -801,36 +807,37 @@
     // time matters, not just "something was logged."
     var inStr = formatLogTime(e.loginTime);
     var outStr = formatLogTime(e.logoutTime);
-    if (inStr && outStr) return 'Checked in ' + inStr + ', checked out ' + outStr;
-    if (inStr) return 'Checked in ' + inStr;
-    if (outStr) return 'Checked out ' + outStr + ' (no check-in)';
+    if (inStr && outStr) return 'IN: ' + inStr + '\nOUT: ' + outStr;
+    if (inStr) return 'IN: ' + inStr;
+    if (outStr) return 'OUT: ' + outStr;
     return null;
   }
 
   function detailFor(status, e) {
+    var times = logNote(e); // actual check-in/check-out times, shown for every category now
+
     if (status === 'presentButLate') {
-      if (e.lateMinutes != null) {
-        return e.lateMinutes + ' min late' + (e.hasLogout === false ? ' — still clocked in (no log-out)' : '');
-      }
-      return 'No log-in (has log-out)';
+      var context = e.lateMinutes != null ? (e.lateMinutes + ' min late') : 'No log-in (has log-out)';
+      return times ? (context + ' — ' + times) : context;
     }
     if (status === 'onTime') {
-      return e.hasLogout === false ? 'Still clocked in (no log-out)' : '—';
+      return times || '—';
     }
     if (status === 'late' || status === 'didNotReport') {
-      return e.reason || '—';
+      var reason = e.reason || '';
+      if (times) return reason ? (reason + ' — ' + times) : times;
+      return reason || '—';
     }
     if (status === 'onLeave') {
       var from = formatLeaveDate(e.leaveFrom);
       var to = formatLeaveDate(e.leaveTo);
       var range = (from && to) ? ('On leave ' + from + ' – ' + to) : 'On approved leave';
-      var note = logNote(e);
-      return note ? (range + ' — ' + note) : range;
+      return times ? (range + ' — ' + times) : range;
     }
     if (status === 'restDay') {
-      return logNote(e) || '—';
+      return times || '—';
     }
-    return '—';
+    return times || '—';
   }
 
   function escapeHtml(str) {
