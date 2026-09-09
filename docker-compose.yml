@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  shift-board:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      # These are now optional — only needed to bootstrap the very first
+      # run. After that, use the dashboard's "Sprout settings" panel
+      # instead; it persists to the volume below and takes over.
+      SPROUT_BASE: ${SPROUT_BASE:-https://gateway-sb.sprout.ph}
+      SPROUT_CLIENT_ID: ${SPROUT_CLIENT_ID}
+      SPROUT_CLIENT_SECRET: ${SPROUT_CLIENT_SECRET}
+      SPROUT_SUBSCRIPTION_KEY: ${SPROUT_SUBSCRIPTION_KEY}
+      SPROUT_USER_ID: ${SPROUT_USER_ID}
+    volumes:
+      # REQUIRED for settings saved through the dashboard to survive a
+      # container restart/recreate. Without this, saved credentials are
+      # lost every time the container is rebuilt.
+      - shift-board-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  shift-board-data:

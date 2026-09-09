@@ -1,0 +1,13 @@
+{
+  "name": "shift-board-no-auth",
+  "version": "1.0.0",
+  "description": "Shift Board — containerized backend, NO login/access control. Anyone who can reach the URL can view attendance data.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

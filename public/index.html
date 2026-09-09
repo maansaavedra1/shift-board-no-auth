@@ -1,0 +1,1239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shift Board — Live</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Rubik:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --bg: #12141C;
+    --panel: #1B1E2B;
+    --panel-2: #22263A;
+    --border: #2E3348;
+    --text: #E8E9F0;
+    --text-muted: #8B8FA3;
+    --text-dim: #5D6178;
+
+    --late: #CC2200;
+    --late-dim: #4A1310;
+    --leave: #1679FA;
+    --leave-dim: #14294F;
+    --ontime: #32CE13;
+    --ontime-dim: #1B3A12;
+    --off: #5D6178;
+    --off-dim: #262A3A;
+    --presentlate: #FF7F00;
+    --presentlate-dim: #4A2E00;
+    --dnr: #8139EE;
+    --dnr-dim: #2E1750;
+
+    --font-display: 'Inter', sans-serif;
+    --font-body: 'Rubik', sans-serif;
+    --font-mono: 'Rubik', sans-serif;
+  }
+
+  html.light {
+    --bg: #F3F4F8;
+    --panel: #FFFFFF;
+    --panel-2: #F5F3FF;
+    --border: #E4DFF7;
+    --text: #1A1A2E;
+    --text-muted: #6B6F85;
+    --text-dim: #9A9DA8;
+
+    --late-dim: #FBDAD5;
+    --leave-dim: #DCE9FE;
+    --ontime-dim: #DFF7D0;
+    --off-dim: #E7E8ED;
+    --presentlate-dim: #FFE8CC;
+    --dnr-dim: #EDE0FB;
+  }
+
+  /* Sprout-brand light theme — gradient backdrop + soft elevated cards,
+     matching the Attendance Converter tool's visual language. */
+  html.light body {
+    background: linear-gradient(160deg, #F5F3FF 0%, #E8FAF8 55%, #F7F9ED 100%);
+    background-attachment: fixed;
+  }
+  html.light .setup-box,
+  html.light .summary-card,
+  html.light .control-bar,
+  html.light .group,
+  html.light .banner {
+    border: none;
+    border-radius: 20px;
+    box-shadow: 0 4px 24px rgba(26, 26, 46, 0.06);
+  }
+  html.light .setup-box input,
+  html.light #settingClientId,
+  html.light #settingClientSecret,
+  html.light #settingSubscriptionKey,
+  html.light #settingUserId {
+    border-radius: 12px;
+    border: 1.5px dashed #D7CFF5;
+    background: var(--panel-2);
+  }
+  html.light .setup-box button,
+  html.light #saveSproutSettingsBtn {
+    background: linear-gradient(135deg, #8139EE, #1679FA);
+    color: #FFFFFF;
+    border: none;
+    border-radius: 14px;
+    font-weight: 700;
+    padding: 12px 24px;
+    box-shadow: 0 4px 14px rgba(22, 121, 250, 0.25);
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  html.light .setup-box button:hover,
+  html.light #saveSproutSettingsBtn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(22, 121, 250, 0.32);
+  }
+  html.light .refresh-btn,
+  html.light .range-btn {
+    background: #FFFFFF;
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+  }
+  html.light .range-btn.active {
+    background: linear-gradient(135deg, #8139EE, #1679FA);
+    border-color: transparent;
+    color: #FFFFFF;
+  }
+
+  .eyebrow-badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: linear-gradient(135deg, #F0E6FF, #E0CCFF);
+    color: #8139EE; font-family: var(--font-display); font-weight: 600;
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 6px 16px; border-radius: 999px; margin-bottom: 12px;
+    width: fit-content;
+  }
+  html.light .gradient-text {
+    background: linear-gradient(135deg, #8139EE, #1679FA);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+  .header-titles { display: flex; flex-direction: column; }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-body); padding: 32px 24px 64px; min-height: 100vh; transition: background .15s ease, color .15s ease; }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+
+  .board-header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid var(--border); padding-bottom: 16px; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+  .brand { font-family: var(--font-display); font-size: 34px; font-weight: 900; letter-spacing: -0.5px; display: flex; align-items: center; gap: 10px; }
+  .eyebrow-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ontime); box-shadow: 0 0 8px var(--ontime); animation: pulse 2.4s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .eyebrow-badge .dot { animation: none; } }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  .header-right { display: flex; align-items: center; gap: 20px; }
+  .theme-switch { display: flex; align-items: center; gap: 10px; font-family: var(--font-display); font-size: 13px; font-weight: 600; user-select: none; }
+  .theme-switch .switch-track {
+    position: relative;
+    width: 52px;
+    height: 28px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background .2s ease, border-color .2s ease;
+  }
+  .theme-switch .switch-track.is-light { background: var(--ontime); border-color: var(--ontime); }
+  .theme-switch .switch-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    transition: transform .2s ease;
+  }
+  .theme-switch .switch-track.is-light .switch-knob { transform: translateX(24px); }
+  .theme-switch .label { color: var(--text-dim); transition: color .2s ease; }
+  .theme-switch .label.active { color: var(--text); }
+
+  .clockbox { text-align: right; }
+  .clockbox .date { font-family: var(--font-display); font-size: 13px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; }
+  .clockbox .time { font-family: var(--font-display); font-size: 26px; font-weight: 700; letter-spacing: 1px; }
+
+  .setup-box { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 16px 20px; margin-bottom: 20px; }
+  .setup-box.hidden { display: none; }
+  .setup-box .label { font-family: var(--font-display); font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-muted); margin-bottom: 8px; }
+  .setup-box input { width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); font-size: 13px; padding: 8px 10px; border-radius: 4px; margin-bottom: 10px; }
+  .setup-box button { background: var(--ontime-dim); color: var(--ontime); border: 1px solid var(--ontime); font-family: var(--font-mono); font-size: 12px; padding: 8px 14px; border-radius: 4px; cursor: pointer; }
+
+  .banner { border-radius: 6px; padding: 10px 14px; font-size: 12px; margin-bottom: 16px; display: none; }
+  .banner.visible { display: block; }
+  .banner.error { background: var(--late-dim); color: var(--late); border: 1px solid var(--late); }
+  .banner.info { background: var(--leave-dim); color: var(--leave); border: 1px solid var(--leave); }
+
+  .summary { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 20px; }
+  @media (max-width: 900px) { .summary { grid-template-columns: repeat(3, 1fr); } }
+  .summary-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; position: relative; overflow: hidden; }
+  .summary-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent-color, var(--text-dim)); }
+  .summary-card .label { font-family: var(--font-display); font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-muted); margin-bottom: 6px; }
+  .summary-card .count { font-size: 30px; font-weight: 700; line-height: 1; }
+  .summary-card.late { --accent-color: var(--presentlate); }
+  .summary-card.presentbutlate { --accent-color: var(--late); }
+  .summary-card.didnotreport { --accent-color: var(--dnr); }
+  .summary-card.restday { --accent-color: var(--off); }
+  .summary-card.leave { --accent-color: var(--leave); }
+  .summary-card.ontime { --accent-color: var(--ontime); }
+
+  .control-bar { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; display: flex; gap: 20px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; font-size: 12px; }
+  .refresh-btn { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); font-size: 12px; padding: 6px 14px; border-radius: 4px; cursor: pointer; }
+  .refresh-btn:hover { border-color: var(--text-dim); }
+  .refresh-btn:disabled, .range-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  #groupsContainer.is-loading { opacity: 0.5; transition: opacity .2s ease; pointer-events: none; }
+  .hourglass { display: inline-block; animation: pulse-hourglass 1.2s ease-in-out infinite; }
+  @keyframes pulse-hourglass { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) { .hourglass { animation: none; } }
+  .range-btn { background: var(--panel-2); border: 1px solid var(--border); color: var(--text-muted); font-family: var(--font-mono); font-size: 12px; padding: 6px 14px; border-radius: 4px; cursor: pointer; }
+  .range-btn:hover { border-color: var(--text-dim); color: var(--text); }
+  .range-btn.active { background: var(--ontime-dim); color: var(--ontime); border-color: var(--ontime); }
+  .search-row { position: relative; margin-bottom: 16px; }
+  .search-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--text-dim); pointer-events: none; }
+  #employeeSearch {
+    width: 100%; background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font-mono); font-size: 13px; padding: 10px 14px 10px 40px; border-radius: 6px;
+  }
+  #employeeSearch:focus { outline: none; border-color: var(--ontime); }
+  tr.filtered-out { display: none; }
+  .group.all-filtered { display: none; }
+  .day-block { margin-bottom: 28px; }
+  .compact .day-block { margin-bottom: 14px; }
+  .day-jump-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); z-index: 5; padding-top: 4px; }
+  .day-jump-btn {
+    font-family: var(--font-mono); font-size: 12px; color: var(--text-muted);
+    background: var(--panel); border: 1px solid var(--border);
+    padding: 6px 14px; border-radius: 999px; cursor: pointer;
+  }
+  .day-jump-btn:hover { border-color: var(--text-dim); color: var(--text); }
+  .day-jump-btn.is-today { color: var(--ontime); border-color: var(--ontime); background: var(--ontime-dim); }
+  .day-block-heading { font-family: var(--font-display); font-weight: 800; font-size: 16px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 10px; }
+  .compact .day-block-heading { font-size: 13px; margin-bottom: 6px; padding-bottom: 5px; }
+  .day-block-heading .day-name { color: var(--text-dim); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+  .day-quick-scan { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  .compact .day-quick-scan { gap: 6px; margin-bottom: 8px; }
+  .compact .quick-pill { padding: 3px 8px; font-size: 10px; }
+  .quick-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+    background: var(--panel); border: 1px solid var(--border);
+    padding: 5px 10px; border-radius: 999px;
+  }
+  .quick-pill b { color: var(--text); font-weight: 700; }
+  .quick-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .quick-pill.late .quick-dot { background: var(--presentlate); }
+  .quick-pill.presentbutlate .quick-dot { background: var(--late); }
+  .quick-pill.didnotreport .quick-dot { background: var(--dnr); }
+  .quick-pill.ontime .quick-dot { background: var(--ontime); }
+  .quick-pill.onleave .quick-dot { background: var(--leave); }
+  .quick-pill.restday .quick-dot { background: var(--off); }
+  .quick-delta { color: var(--text-dim); font-size: 10px; }
+  .status-text { color: var(--text-dim); font-size: 11px; }
+  .settings-link { color: var(--text-dim); font-size: 11px; cursor: pointer; text-decoration: underline; }
+  #settingsLink { margin-left: auto; }
+
+  .group { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; overflow: hidden; }
+  .group-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; cursor: pointer; user-select: none; transition: background .15s ease; }
+  .compact .group-header { padding: 8px 14px; }
+  .compact .group { margin-bottom: 6px; }
+  .compact .group-header .title { font-size: 12px; }
+  .compact .group-header .status-dot { width: 7px; height: 7px; }
+  .compact .group-header .count-badge { font-size: 11px; padding: 2px 8px; }
+  .group-header:hover { background: var(--panel-2); }
+  .group-header.no-toggle { cursor: default; }
+  .group-header.no-toggle:hover { background: none; }
+  .group.empty-group { opacity: 0.75; }
+  .group-header .left { display: flex; align-items: center; gap: 12px; }
+  .group-header .chevron { display: flex; color: var(--text-dim); transition: transform .2s ease; }
+  .group-header .chevron svg { width: 14px; height: 14px; }
+  .group.collapsed .chevron { transform: rotate(-90deg); }
+  .group-header .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent-color, var(--text-dim)); box-shadow: 0 0 0 3px var(--accent-dim, transparent); }
+  .group-header .title { font-family: var(--font-display); font-weight: 700; font-size: 14px; letter-spacing: 0.3px; }
+  .info-icon {
+    position: relative;
+    display: inline-flex;
+    vertical-align: -2px;
+    color: var(--text-dim);
+    cursor: help;
+  }
+  .info-icon svg { width: 13px; height: 13px; }
+  .info-icon:hover { color: var(--text-muted); }
+  #sharedTooltip {
+    position: fixed;
+    width: 220px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.5;
+    color: var(--text-muted);
+    text-transform: none;
+    letter-spacing: normal;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity .15s ease;
+    z-index: 1000;
+    pointer-events: none;
+  }
+  #sharedTooltip.visible { opacity: 1; visibility: visible; }
+  .group-header .count-badge {
+    font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+    color: var(--accent-color, var(--text-muted));
+    background: var(--accent-dim, var(--panel-2));
+    padding: 3px 11px; border-radius: 999px; min-width: 22px; text-align: center;
+  }
+  .group.late { --accent-color: var(--presentlate); --accent-dim: var(--presentlate-dim); }
+  .group.presentButLate { --accent-color: var(--late); --accent-dim: var(--late-dim); }
+  .group.didNotReport { --accent-color: var(--dnr); --accent-dim: var(--dnr-dim); }
+  .group.restDay { --accent-color: var(--off); --accent-dim: var(--off-dim); }
+  .group.onLeave { --accent-color: var(--leave); --accent-dim: var(--leave-dim); }
+  .group.onTime { --accent-color: var(--ontime); --accent-dim: var(--ontime-dim); }
+  .group-header .title { color: var(--accent-color, var(--text)); }
+  .group.empty-group .title { color: var(--text-muted); }
+  .group.empty-group .status-dot { opacity: 0.5; }
+  .group.empty-group .count-badge { color: var(--text-dim); background: var(--panel-2); }
+
+  .group-body { border-top: 1px solid var(--border); }
+  .group.collapsed .group-body { display: none; }
+  .group-empty { padding: 14px 18px; color: var(--text-dim); font-size: 12px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+  table col.col-employee { width: 22%; }
+  table col.col-department { width: 20%; }
+  table col.col-supervisor { width: 20%; }
+  table col.col-detail { width: 38%; }
+
+  @media (max-width: 640px) {
+    .summary { grid-template-columns: repeat(2, 1fr); }
+    .control-bar { gap: 10px; }
+    .day-jump-nav { gap: 6px; }
+
+    table, thead, tbody, th, tr { display: block; }
+    table col { display: none; } /* colgroup widths don't apply once table is display:block */
+    thead { display: none; }
+    tbody tr {
+      display: block; border: 1px solid var(--border); border-radius: 6px;
+      margin-bottom: 10px; padding: 10px 12px; background: var(--panel-2);
+    }
+    tbody tr.filtered-out { display: none; }
+    tbody td {
+      display: flex; justify-content: space-between; align-items: baseline;
+      padding: 6px 0; border: none; gap: 12px;
+    }
+    tbody td::before {
+      content: attr(data-label);
+      font-family: var(--font-display); font-size: 10px; text-transform: uppercase;
+      letter-spacing: 1px; color: var(--text-dim); flex-shrink: 0;
+    }
+    tbody td.emp-name { font-size: 14px; display: block; padding: 0 0 8px 0; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+  }
+  thead th { text-align: left; font-family: var(--font-display); font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-muted); padding: 8px 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .compact thead th { padding: 5px 14px; font-size: 9px; }
+  tbody td { overflow-wrap: break-word; }
+  tbody tr { border-top: 1px solid var(--border); }
+  tbody tr:hover { background: var(--panel-2); }
+  tbody td { padding: 10px 18px; vertical-align: middle; }
+  .compact tbody td { padding: 5px 14px; font-size: 12px; }
+  .compact .emp-name { font-size: 12px; }
+  .emp-name { font-family: var(--font-display); font-weight: 600; font-size: 14px; }
+  .mono-cell { color: var(--text-muted); }
+
+  .footer-note { margin-top: 16px; font-size: 11px; color: var(--text-dim); line-height: 1.6; }
+  .site-footer {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border);
+    flex-wrap: wrap; gap: 12px;
+  }
+  .site-footer-left { display: flex; align-items: center; gap: 10px; }
+  .footer-brand { font-family: var(--font-display); font-weight: 600; font-size: 14px; color: var(--text-muted); margin-right: 4px; }
+  .icon-badge {
+    display: flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; border-radius: 50%;
+    background: var(--panel-2); color: var(--text-dim);
+    transition: background .15s ease, color .15s ease;
+  }
+  .icon-badge:hover { background: var(--border); color: var(--text-muted); }
+  .icon-badge svg { width: 16px; height: 16px; }
+  .site-footer-right { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); display: flex; gap: 12px; }
+  .theme-switch-row { display: flex; justify-content: center; margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="board-header">
+    <div class="header-titles">
+      <div class="eyebrow-badge"><span class="dot"></span> Live Attendance Dashboard</div>
+      <div class="brand"><span class="gradient-text">Shift Board</span></div>
+    </div>
+    <div class="clockbox">
+      <div class="date" id="todayDate">—</div>
+      <div class="time" id="liveClock">--:--:--</div>
+    </div>
+  </div>
+
+  <div class="setup-box" id="setupBox">
+    <div class="label">One-time setup: paste your Shift Board API URL</div>
+    <input type="text" id="scriptUrlInput" placeholder="https://your-backend-host/api/shift-board">
+    <button id="saveUrlBtn">Save &amp; Connect</button>
+  </div>
+
+  <div class="banner error" id="errorBanner"></div>
+  <div class="banner info" id="infoBanner"></div>
+
+  <div class="control-bar">
+    <button class="refresh-btn" id="refreshBtn">Refresh</button>
+    <button class="refresh-btn" id="exportBtn">Export to Excel</button>
+    <span class="status-text" id="lastUpdated">Not connected yet</span>
+    <span class="settings-link" id="settingsLink">Change URL</span>
+    <span class="settings-link" id="resetSectionsLink">Reset section view</span>
+    <span class="settings-link" id="sproutSettingsLink">Credentials</span>
+  </div>
+
+  <div class="setup-box" id="sproutSettingsPanel" style="display:none;">
+    <div class="label">Sprout HR credentials (saved on the server, not in this page's code)</div>
+    <div id="sproutSettingsError" class="banner error" style="display:none;"></div>
+    <div id="sproutSettingsSuccess" class="banner info" style="display:none;"></div>
+
+    <div id="sproutSettingsStatus" style="font-size: 12px; opacity: 0.75; margin-bottom: 12px;">Loading current status…</div>
+
+    <input type="text" id="settingClientId" placeholder="Sprout Client ID">
+    <input type="password" id="settingClientSecret" placeholder="Sprout Client Secret (leave blank to keep current)">
+    <input type="text" id="settingSubscriptionKey" placeholder="Sprout Subscription Key">
+    <input type="text" id="settingUserId" placeholder="Sprout User ID">
+    <button id="saveSproutSettingsBtn">Save Settings</button>
+
+    <div style="font-size: 11px; opacity: 0.6; margin-top: 14px; line-height: 1.5;">
+      These are saved on the server (not sent to or stored in your browser after saving) and used for every request to Sprout HR going forward. Leave a field blank to keep its current saved value unchanged.<br>
+      <strong>No login guards this page or this save action</strong> — anyone with this dashboard's URL can view this status and change these values.
+    </div>
+  </div>
+
+  <div class="control-bar" id="rangeBar">
+    <span class="status-text" style="margin-right: 4px;">View:</span>
+    <button class="range-btn active" id="rangeToday" data-days="1">Today</button>
+    <button class="range-btn" id="rangeLast2" data-days="2">Last 2 Days</button>
+    <button class="range-btn" id="rangeLast5" data-days="5">Last 5 Days</button>
+    <button class="range-btn" id="rangeLast7" data-days="7">Last 7 Days</button>
+    <button class="range-btn" id="rangeCustom">Custom range…</button>
+  </div>
+
+  <div class="setup-box" id="customRangePanel" style="display:none;">
+    <div class="label">Pick any date range to check (e.g. a specific day last month)</div>
+    <div id="customRangeError" class="banner error" style="display:none;"></div>
+    <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end;">
+      <div>
+        <div style="font-size:11px; color:var(--text-muted); margin-bottom:6px;">From</div>
+        <input type="date" id="customRangeFrom">
+      </div>
+      <div>
+        <div style="font-size:11px; color:var(--text-muted); margin-bottom:6px;">To</div>
+        <input type="date" id="customRangeTo">
+      </div>
+      <button id="applyCustomRangeBtn" style="height:44px;">View This Range</button>
+    </div>
+    <div style="font-size: 11px; opacity: 0.6; margin-top: 12px;">
+      Up to 62 days at a time. For a single day, set From and To to the same date.
+    </div>
+  </div>
+
+  <div class="search-row">
+    <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+    <input type="text" id="employeeSearch" placeholder="Search employee name...">
+  </div>
+
+  <div class="summary" id="summaryBlock">
+    <div class="summary-card late"><div class="label">Late (Shift Ongoing) <span class="info-icon" data-tooltip="No log-in or log-out recorded yet, and their shift hasn't ended — still time for them to show up."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countLate">—</div></div>
+    <div class="summary-card presentbutlate"><div class="label">Present but Late <span class="info-icon" data-tooltip="Logged in after their shift start time, or has a log-out with no matching log-in (counted as present)."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countPresentButLate">—</div></div>
+    <div class="summary-card didnotreport"><div class="label">Did Not Report <span class="info-icon" data-tooltip="No log-in or log-out at all, and their shift has already ended."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countDidNotReport">—</div></div>
+    <div class="summary-card ontime"><div class="label">On Time <span class="info-icon" data-tooltip="Logged in at or before their scheduled shift start time."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countOntime">—</div></div>
+    <div class="summary-card leave"><div class="label">On Leave <span class="info-icon" data-tooltip="Has an approved leave request covering today."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countLeave">—</div></div>
+    <div class="summary-card restday"><div class="label">Rest Day <span class="info-icon" data-tooltip="Not scheduled to work today per their shift calendar."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countRestDay">—</div></div>
+  </div>
+
+  <div id="groupsContainer"></div>
+
+  <div class="footer-note">
+    This page calls your own Shift Board API URL, which securely holds your Sprout credentials and does the actual API calls —
+    your Client Secret never appears in this page. The URL you paste above is saved in this browser only (not sent anywhere else).
+    Department and Supervisor field names are still being confirmed against Sprout's real data — if they show as a dash, that mapping needs adjusting in <code>sprout.js</code>.
+    <br><br>
+    <strong>No login is required to view this page.</strong> Anyone with the dashboard's URL can see this data — treat that URL accordingly.
+  </div>
+
+  <div class="site-footer">
+    <div class="site-footer-left">
+      <span class="footer-brand">Sprout Solutions</span>
+      <a class="icon-badge" href="https://www.facebook.com/SproutHRTech/" target="_blank" rel="noopener" aria-label="Sprout on Facebook">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 12a10 10 0 1 0-11.6 9.9v-7H7.9V12h2.5V9.8c0-2.5 1.5-3.9 3.8-3.9 1.1 0 2.2.2 2.2.2v2.5h-1.3c-1.2 0-1.6.8-1.6 1.6V12h2.8l-.4 2.9h-2.4v7A10 10 0 0 0 22 12"/></svg>
+      </a>
+      <a class="icon-badge" href="https://www.instagram.com/sprouthrtech/?hl=en" target="_blank" rel="noopener" aria-label="Sprout on Instagram">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg>
+      </a>
+      <a class="icon-badge" href="https://www.youtube.com/c/SproutHRTech" target="_blank" rel="noopener" aria-label="Sprout on YouTube">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M22.5 6.2a2.8 2.8 0 0 0-2-2C18.9 3.7 12 3.7 12 3.7s-6.9 0-8.5.5a2.8 2.8 0 0 0-2 2A29 29 0 0 0 1 12a29 29 0 0 0 .5 5.8 2.8 2.8 0 0 0 2 2c1.6.5 8.5.5 8.5.5s6.9 0 8.5-.5a2.8 2.8 0 0 0 2-2A29 29 0 0 0 23 12a29 29 0 0 0-.5-5.8M9.8 15.5V8.5l6 3.5z"/></svg>
+      </a>
+      <a class="icon-badge" href="https://www.linkedin.com/company/sprouthrtech" target="_blank" rel="noopener" aria-label="Sprout on LinkedIn">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4.98 3.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5M3 9h4v12H3zM9 9h3.8v1.7h.05c.53-1 1.83-2 3.77-2 4.03 0 4.78 2.65 4.78 6.1V21H17.6v-5.6c0-1.35-.02-3.1-1.9-3.1-1.9 0-2.2 1.48-2.2 3v5.7H9z"/></svg>
+      </a>
+    </div>
+    <div class="site-footer-right">
+      <div class="theme-switch">
+        <span class="label" id="labelDark">Dark</span>
+        <div class="switch-track" id="themeToggle">
+          <div class="switch-knob"></div>
+        </div>
+        <span class="label" id="labelLight">Light</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div id="sharedTooltip"></div>
+
+<script>
+  var STATUS_ORDER = ['late', 'presentButLate', 'didNotReport', 'onTime', 'onLeave', 'restDay'];
+  var STATUS_META = {
+    late:            { label: 'Late (Shift Ongoing)', description: 'No log-in or log-out recorded yet, and their shift hasn\'t ended — still time for them to show up.' },
+    presentButLate:  { label: 'Present but Late', description: 'Logged in after their shift start time, or has a log-out with no matching log-in (counted as present).' },
+    onTime:          { label: 'On Time', description: 'Logged in at or before their scheduled shift start time.' },
+    didNotReport:    { label: 'Did Not Report', description: 'No log-in or log-out at all, and their shift has already ended.' },
+    onLeave:         { label: 'On Leave', description: 'Has an approved leave request covering today.' },
+    restDay:         { label: 'On Rest Day', description: 'Not scheduled to work today per their shift calendar.' }
+  };
+
+  var collapsedState = {};
+  var lastReport = null; // most recent successful report, used for Export
+
+  var lastMultiDayReports = null; // set when in multi-day mode, mirrors lastReport for Today mode
+
+  function exportToExcel() {
+    if (lastMultiDayReports) {
+      exportMultiDayToExcel(lastMultiDayReports);
+      return;
+    }
+    if (!lastReport) {
+      alert('Nothing to export yet — make sure the dashboard has loaded data first.');
+      return;
+    }
+
+    var workbook = XLSX.utils.book_new();
+
+    STATUS_ORDER.forEach(function (status) {
+      var meta = STATUS_META[status];
+      var list = lastReport[status] || [];
+
+      var rows = list.map(function (e) {
+        return {
+          Employee: e.name || '',
+          'System ID': e.systemId != null ? e.systemId : '—',
+          Department: e.department || '—',
+          Supervisor: e.supervisor || '—',
+          Detail: detailFor(status, e)
+        };
+      });
+
+      // Sheet tab names can't contain certain characters or exceed 31 chars.
+      var sheetName = meta.label.replace(/[\\/?*\[\]:]/g, '').substring(0, 31);
+      var worksheet = rows.length > 0
+        ? XLSX.utils.json_to_sheet(rows)
+        : XLSX.utils.json_to_sheet([{ Employee: 'No one in this category' }]);
+      // Adds Excel's native filter dropdown arrows to the header row, so
+      // the file can be filtered/sorted per column once opened in Excel —
+      // covers the sheet's whole populated range automatically.
+      worksheet['!autofilter'] = { ref: worksheet['!ref'] };
+      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    });
+
+    var todayStr = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(workbook, 'Shift-Board-' + todayStr + '.xlsx');
+  }
+
+  function exportMultiDayToExcel(dayResults) {
+    var workbook = XLSX.utils.book_new();
+
+    // One tab PER DAY (not per status) — a 7-day export with 6 statuses each
+    // would mean 42 tabs, which is unmanageable. Each day's tab combines all
+    // statuses into one sheet with a Status column instead.
+    dayResults.forEach(function (dayResult) {
+      var rows = [];
+      STATUS_ORDER.forEach(function (status) {
+        var meta = STATUS_META[status];
+        var list = dayResult.report[status] || [];
+        list.forEach(function (e) {
+          rows.push({
+            Status: meta.label,
+            Employee: e.name || '',
+            'System ID': e.systemId != null ? e.systemId : '—',
+            Department: e.department || '—',
+            Supervisor: e.supervisor || '—',
+            Detail: detailFor(status, e)
+          });
+        });
+      });
+
+      var dateObj = new Date(dayResult.dateKey + 'T00:00:00');
+      var sheetName = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); // e.g. "Jul 21"
+
+      var worksheet = rows.length > 0
+        ? XLSX.utils.json_to_sheet(rows)
+        : XLSX.utils.json_to_sheet([{ Status: 'No employees found for this day' }]);
+      worksheet['!autofilter'] = { ref: worksheet['!ref'] };
+      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    });
+
+    var firstDate = dayResults[0].dateKey;
+    var lastDate = dayResults[dayResults.length - 1].dateKey;
+    XLSX.writeFile(workbook, 'Shift-Board-' + firstDate + '-to-' + lastDate + '.xlsx');
+  }
+
+  function tickClock() {
+    var now = new Date();
+    document.getElementById('liveClock').textContent = now.toLocaleTimeString('en-PH', { hour12: false });
+    document.getElementById('todayDate').textContent = now.toLocaleDateString('en-PH', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  }
+  tickClock();
+  setInterval(tickClock, 1000);
+
+  // Shared tooltip for the info icons on each summary card. Positioned via
+  // JS (not CSS) so it renders in front of everything, escaping the
+  // summary card's overflow:hidden (needed for its rounded-corner accent
+  // strip) rather than getting clipped inside it.
+  var sharedTooltip = document.getElementById('sharedTooltip');
+  document.querySelectorAll('.info-icon').forEach(function (icon) {
+    function showTooltip() {
+      sharedTooltip.textContent = icon.getAttribute('data-tooltip');
+      var rect = icon.getBoundingClientRect();
+      sharedTooltip.classList.add('visible');
+      var tooltipRect = sharedTooltip.getBoundingClientRect();
+      var left = rect.left + rect.width / 2 - tooltipRect.width / 2;
+      left = Math.max(8, Math.min(left, window.innerWidth - tooltipRect.width - 8));
+      sharedTooltip.style.left = left + 'px';
+      sharedTooltip.style.top = (rect.top - tooltipRect.height - 8) + 'px';
+    }
+    function hideTooltip() {
+      sharedTooltip.classList.remove('visible');
+    }
+    icon.setAttribute('tabindex', '0');
+    icon.addEventListener('mouseenter', showTooltip);
+    icon.addEventListener('mouseleave', hideTooltip);
+    icon.addEventListener('focus', showTooltip);
+    icon.addEventListener('blur', hideTooltip);
+  });
+
+  function applyTheme(theme) {
+    document.documentElement.classList.toggle('light', theme === 'light');
+    document.getElementById('themeToggle').classList.toggle('is-light', theme === 'light');
+    document.getElementById('labelDark').classList.toggle('active', theme !== 'light');
+    document.getElementById('labelLight').classList.toggle('active', theme === 'light');
+    try { localStorage.setItem('shiftBoardTheme', theme); } catch (e) {}
+  }
+  function getSavedTheme() {
+    try { return localStorage.getItem('shiftBoardTheme') || 'light'; } catch (e) { return 'light'; }
+  }
+  applyTheme(getSavedTheme());
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var current = document.documentElement.classList.contains('light') ? 'light' : 'dark';
+    applyTheme(current === 'light' ? 'dark' : 'light');
+  });
+
+  function getSavedUrl() {
+    try { return localStorage.getItem('shiftBoardScriptUrl') || ''; } catch (e) { return ''; }
+  }
+  function saveUrl(url) {
+    try { localStorage.setItem('shiftBoardScriptUrl', url); } catch (e) {}
+  }
+
+  function showSetup(show) {
+    document.getElementById('setupBox').classList.toggle('hidden', !show);
+  }
+  function showError(msg) {
+    var b = document.getElementById('errorBanner');
+    b.textContent = msg;
+    b.classList.add('visible');
+  }
+  function hideError() {
+    document.getElementById('errorBanner').classList.remove('visible');
+  }
+  function showInfo(msg) {
+    var b = document.getElementById('infoBanner');
+    b.textContent = msg;
+    b.classList.add('visible');
+  }
+  function hideInfo() {
+    document.getElementById('infoBanner').classList.remove('visible');
+  }
+
+  // --- Sprout settings panel: view/save credentials via the server ---
+  // These never touch Sprout directly from the browser (confirmed via
+  // testing that Sprout's API blocks direct browser requests entirely —
+  // this panel talks only to our own server, same-origin, which is what
+  // then calls Sprout server-to-server).
+
+  var sproutSettingsOpen = false;
+
+  document.getElementById('sproutSettingsLink').addEventListener('click', function () {
+    sproutSettingsOpen = !sproutSettingsOpen;
+    document.getElementById('sproutSettingsPanel').style.display = sproutSettingsOpen ? 'block' : 'none';
+    if (sproutSettingsOpen) loadSproutSettingsStatus();
+  });
+
+  function sproutSettingsError(msg) {
+    var el = document.getElementById('sproutSettingsError');
+    el.textContent = msg;
+    el.style.display = 'block';
+    document.getElementById('sproutSettingsSuccess').style.display = 'none';
+  }
+  function sproutSettingsSuccess(msg) {
+    var el = document.getElementById('sproutSettingsSuccess');
+    el.textContent = msg;
+    el.style.display = 'block';
+    document.getElementById('sproutSettingsError').style.display = 'none';
+  }
+
+  function renderSproutStatus(status) {
+    var el = document.getElementById('sproutSettingsStatus');
+    var parts = [];
+    ['SPROUT_CLIENT_ID', 'SPROUT_CLIENT_SECRET', 'SPROUT_SUBSCRIPTION_KEY', 'SPROUT_USER_ID'].forEach(function (key) {
+      var s = status[key] || { set: false };
+      var label = key.replace('SPROUT_', '').replace(/_/g, ' ');
+      if (!s.set) {
+        parts.push(label + ': not set');
+      } else if (s.preview) {
+        parts.push(label + ': ' + s.preview);
+      } else {
+        parts.push(label + ': saved');
+      }
+    });
+    el.textContent = 'Current status — ' + parts.join(' · ');
+  }
+
+  function loadSproutSettingsStatus() {
+    document.getElementById('sproutSettingsStatus').textContent = 'Loading current status…';
+    fetch('/api/settings').then(function (res) {
+      return res.json();
+    }).then(function (data) {
+      if (!data.ok) throw new Error(data.error || 'Could not load settings status.');
+      renderSproutStatus(data.status);
+    }).catch(function (err) {
+      document.getElementById('sproutSettingsStatus').textContent = 'Could not load status: ' + err.message;
+    });
+  }
+
+  document.getElementById('saveSproutSettingsBtn').addEventListener('click', function () {
+    document.getElementById('sproutSettingsError').style.display = 'none';
+    document.getElementById('sproutSettingsSuccess').style.display = 'none';
+
+    var payload = {
+      SPROUT_CLIENT_ID: document.getElementById('settingClientId').value.trim(),
+      SPROUT_CLIENT_SECRET: document.getElementById('settingClientSecret').value.trim(),
+      SPROUT_SUBSCRIPTION_KEY: document.getElementById('settingSubscriptionKey').value.trim(),
+      SPROUT_USER_ID: document.getElementById('settingUserId').value.trim()
+    };
+
+    var hasAny = Object.keys(payload).some(function (k) { return payload[k] !== ''; });
+    if (!hasAny) {
+      sproutSettingsError('Enter at least one value to save.');
+      return;
+    }
+
+    var btn = document.getElementById('saveSproutSettingsBtn');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      return res.json().then(function (body) { return { res: res, body: body }; });
+    }).then(function (result) {
+      if (!result.res.ok || !result.body.ok) {
+        sproutSettingsError(result.body.error || 'Could not save settings.');
+        return;
+      }
+      sproutSettingsSuccess('Saved. New requests to Sprout will use these values immediately.');
+      document.getElementById('settingClientId').value = '';
+      document.getElementById('settingClientSecret').value = '';
+      document.getElementById('settingSubscriptionKey').value = '';
+      document.getElementById('settingUserId').value = '';
+      renderSproutStatus(result.body.status);
+    }).catch(function (err) {
+      sproutSettingsError('Could not save settings: ' + err.message);
+    }).finally(function () {
+      btn.disabled = false;
+      btn.textContent = 'Save Settings';
+    });
+  });
+
+  function formatLeaveDate(isoString) {
+    if (!isoString) return null;
+    var d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString; // fall back to raw value rather than hide it
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  function formatLogTime(isoString) {
+    if (!isoString) return null;
+    var d = new Date(isoString);
+    if (isNaN(d.getTime())) return null;
+    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  }
+
+  function logNote(e) {
+    // Shows actual times, not just a yes/no flag — a real, common
+    // scenario is someone working part of a shift before an emergency
+    // came up and they filed leave for the rest of the day, so the exact
+    // time matters, not just "something was logged."
+    var inStr = formatLogTime(e.loginTime);
+    var outStr = formatLogTime(e.logoutTime);
+    if (inStr && outStr) return 'Checked in ' + inStr + ', checked out ' + outStr;
+    if (inStr) return 'Checked in ' + inStr;
+    if (outStr) return 'Checked out ' + outStr + ' (no check-in)';
+    return null;
+  }
+
+  function detailFor(status, e) {
+    if (status === 'presentButLate') {
+      if (e.lateMinutes != null) {
+        return e.lateMinutes + ' min late' + (e.hasLogout === false ? ' — still clocked in (no log-out)' : '');
+      }
+      return 'No log-in (has log-out)';
+    }
+    if (status === 'onTime') {
+      return e.hasLogout === false ? 'Still clocked in (no log-out)' : '—';
+    }
+    if (status === 'late' || status === 'didNotReport') {
+      return e.reason || '—';
+    }
+    if (status === 'onLeave') {
+      var from = formatLeaveDate(e.leaveFrom);
+      var to = formatLeaveDate(e.leaveTo);
+      var range = (from && to) ? ('On leave ' + from + ' – ' + to) : 'On approved leave';
+      var note = logNote(e);
+      return note ? (range + ' — ' + note) : range;
+    }
+    if (status === 'restDay') {
+      return logNote(e) || '—';
+    }
+    return '—';
+  }
+
+  function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.textContent = str == null ? '' : String(str);
+    return div.innerHTML;
+  }
+
+  function renderGroups(report, containerEl, options) {
+    var container = containerEl || document.getElementById('groupsContainer');
+    var forceExpanded = options && options.forceExpanded;
+    container.innerHTML = '';
+
+    STATUS_ORDER.forEach(function (status) {
+      var meta = STATUS_META[status];
+      var list = report[status] || [];
+      var isEmpty = list.length === 0;
+
+      // Non-empty groups: collapsed by default unless the person has
+      // explicitly expanded this status before (stored as false).
+      // Empty groups: expanded by default unless explicitly collapsed (true).
+      // In multi-day view (forceExpanded), everything starts expanded
+      // instead, since the point there is scanning several days at once —
+      // clicking a header still works to collapse an individual one if wanted.
+      var storedValue = collapsedState[status];
+      var isCollapsed = forceExpanded
+        ? false
+        : (isEmpty ? (storedValue === true) : (storedValue === undefined ? true : storedValue));
+
+      var groupEl = document.createElement('div');
+      groupEl.className = 'group ' + status + (isCollapsed ? ' collapsed' : '') + (isEmpty ? ' empty-group' : '');
+
+      var header = document.createElement('div');
+      header.className = 'group-header';
+      header.innerHTML =
+        '<div class="left">' +
+          '<span class="chevron"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg></span>' +
+          '<span class="status-dot"></span>' +
+          '<span class="title">' + meta.label + '</span>' +
+        '</div>' +
+        '<span class="count-badge">' + list.length + '</span>';
+
+      header.addEventListener('click', function () {
+        var newState = !groupEl.classList.contains('collapsed');
+        if (!forceExpanded) {
+          collapsedState[status] = newState;
+          try { localStorage.setItem('shiftBoardCollapsed', JSON.stringify(collapsedState)); } catch (e) {}
+        }
+        groupEl.classList.toggle('collapsed');
+      });
+
+      var body = document.createElement('div');
+      body.className = 'group-body';
+
+      if (isEmpty) {
+        body.innerHTML = '<div class="group-empty">No one in this category.</div>';
+      } else {
+        var rowsHtml = list.map(function (e) {
+          return '<tr>' +
+            '<td class="emp-name" data-label="Employee">' + escapeHtml(e.name) + '</td>' +
+            '<td class="mono-cell" data-label="Department">' + escapeHtml(e.department || '—') + '</td>' +
+            '<td class="mono-cell" data-label="Supervisor">' + escapeHtml(e.supervisor || '—') + '</td>' +
+            '<td class="mono-cell" data-label="Detail">' + escapeHtml(detailFor(status, e)) + '</td>' +
+          '</tr>';
+        }).join('');
+
+        var table = document.createElement('table');
+        table.innerHTML =
+          '<colgroup><col class="col-employee"><col class="col-department"><col class="col-supervisor"><col class="col-detail"></colgroup>' +
+          '<thead><tr><th>Employee</th><th>Department</th><th>Supervisor</th><th>Detail</th></tr></thead>' +
+          '<tbody>' + rowsHtml + '</tbody>';
+        body.appendChild(table);
+      }
+
+      groupEl.appendChild(header);
+      groupEl.appendChild(body);
+      container.appendChild(groupEl);
+    });
+  }
+
+  function renderReport(report) {
+    document.getElementById('countLate').textContent = report.late.length;
+    document.getElementById('countPresentButLate').textContent = report.presentButLate.length;
+    document.getElementById('countLeave').textContent = report.onLeave.length;
+    document.getElementById('countOntime').textContent = report.onTime.length;
+    document.getElementById('countDidNotReport').textContent = report.didNotReport.length;
+    document.getElementById('countRestDay').textContent = report.restDay.length;
+    document.getElementById('groupsContainer').classList.remove('compact');
+    renderGroups(report);
+  }
+
+  function renderMultiDayReports(dayResults) {
+    var container = document.getElementById('groupsContainer');
+    container.innerHTML = '';
+
+    // Compute day-over-day deltas using chronological order (dayResults comes
+    // oldest-first) — each day compared against the one immediately before it.
+    var deltasByDateKey = {};
+    dayResults.forEach(function (dayResult, i) {
+      if (i === 0) { deltasByDateKey[dayResult.dateKey] = null; return; }
+      var prev = dayResults[i - 1].report;
+      var deltas = {};
+      STATUS_ORDER.forEach(function (status) {
+        deltas[status] = (dayResult.report[status] || []).length - (prev[status] || []).length;
+      });
+      deltasByDateKey[dayResult.dateKey] = deltas;
+    });
+
+    // Newest day first for a multi-day view (today at the top).
+    var ordered = dayResults.slice().reverse();
+    var todayKey = Utilities_dateKey(new Date());
+
+    // Quick-jump row so you don't have to scroll to find a specific day.
+    var jumpNav = document.createElement('div');
+    jumpNav.className = 'day-jump-nav';
+    ordered.forEach(function (dayResult) {
+      var dateObj = new Date(dayResult.dateKey + 'T00:00:00');
+      var label = dateObj.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' });
+      var isToday = dayResult.dateKey === todayKey;
+      var jumpBtn = document.createElement('button');
+      jumpBtn.className = 'day-jump-btn' + (isToday ? ' is-today' : '');
+      jumpBtn.textContent = label + (isToday ? ' (Today)' : '');
+      jumpBtn.addEventListener('click', function () {
+        var target = document.getElementById('day-block-' + dayResult.dateKey);
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      jumpNav.appendChild(jumpBtn);
+    });
+    container.appendChild(jumpNav);
+
+    ordered.forEach(function (dayResult) {
+      var dayBlock = document.createElement('div');
+      dayBlock.className = 'day-block';
+      dayBlock.id = 'day-block-' + dayResult.dateKey;
+
+      var dateObj = new Date(dayResult.dateKey + 'T00:00:00');
+      var dayName = dateObj.toLocaleDateString('en-PH', { weekday: 'short' });
+      var fullDate = dateObj.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' });
+      var isToday = dayResult.dateKey === todayKey;
+
+      var heading = document.createElement('div');
+      heading.className = 'day-block-heading';
+      heading.innerHTML = fullDate + ' <span class="day-name">(' + dayName + ')' + (isToday ? ' · Today' : '') + '</span>';
+      dayBlock.appendChild(heading);
+
+      // Quick-scan row: small colored counts per status, so you can compare
+      // several days at a glance without expanding every group underneath.
+      var quickScan = document.createElement('div');
+      quickScan.className = 'day-quick-scan';
+      quickScan.innerHTML = STATUS_ORDER.map(function (status) {
+        var meta = STATUS_META[status];
+        var count = (dayResult.report[status] || []).length;
+        var deltas = deltasByDateKey[dayResult.dateKey];
+        var deltaHtml = '';
+        if (deltas && deltas[status] !== 0) {
+          var d = deltas[status];
+          var arrow = d > 0 ? '▲' : '▼';
+          var deltaClass = d > 0 ? 'delta-up' : 'delta-down';
+          deltaHtml = ' <span class="quick-delta ' + deltaClass + '">' + arrow + Math.abs(d) + '</span>';
+        }
+        return '<span class="quick-pill ' + status.toLowerCase() + '"><span class="quick-dot"></span>' + meta.label + ': <b>' + count + '</b>' + deltaHtml + '</span>';
+      }).join('');
+      dayBlock.appendChild(quickScan);
+
+      var subContainer = document.createElement('div');
+      dayBlock.appendChild(subContainer);
+      renderGroups(dayResult.report, subContainer, { forceExpanded: true });
+
+      container.appendChild(dayBlock);
+    });
+  }
+
+  function Utilities_dateKey(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  var selectedDays = 1;
+  var selectedCustomRange = null; // { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' } or null
+
+  function setLoadingState(isLoading) {
+    document.getElementById('refreshBtn').disabled = isLoading;
+    document.getElementById('exportBtn').disabled = isLoading;
+    document.querySelectorAll('.range-btn').forEach(function (btn) { btn.disabled = isLoading; });
+    document.getElementById('groupsContainer').classList.toggle('is-loading', isLoading);
+  }
+
+  function fetchReport() {
+    var url = getSavedUrl();
+    if (!url) { showSetup(true); return; }
+
+    hideError();
+    setLoadingState(true);
+    var loadingMsg;
+    if (selectedCustomRange) {
+      loadingMsg = '<span class="hourglass">⏳</span> Loading ' + selectedCustomRange.from + ' to ' + selectedCustomRange.to + '... this may take a moment';
+    } else if (selectedDays > 1) {
+      loadingMsg = '<span class="hourglass">⏳</span> Loading last ' + selectedDays + ' days... this may take a moment';
+    } else {
+      loadingMsg = '<span class="hourglass">⏳</span> Loading...';
+    }
+    document.getElementById('lastUpdated').innerHTML = loadingMsg;
+
+    var requestUrl = url;
+    if (selectedCustomRange) {
+      requestUrl += (url.indexOf('?') === -1 ? '?' : '&') + 'from=' + selectedCustomRange.from + '&to=' + selectedCustomRange.to;
+    } else if (selectedDays > 1) {
+      requestUrl += (url.indexOf('?') === -1 ? '?' : '&') + 'days=' + selectedDays;
+    }
+
+    fetch(requestUrl).then(function (response) {
+      return response.json();
+    }).then(function (data) {
+      setLoadingState(false);
+      if (!data.ok) {
+        showError('The backend reported an error from Sprout: ' + data.error);
+        document.getElementById('lastUpdated').textContent = 'Failed to load';
+        return;
+      }
+
+      var summaryBlock = document.getElementById('summaryBlock');
+      var t = new Date(data.generatedAt);
+      document.getElementById('lastUpdated').textContent = 'Last updated ' + t.toLocaleTimeString('en-PH', { hour12: false });
+      showSetup(false);
+      hideInfo();
+
+      if (data.reports) {
+        // Multi-day view — no single-day summary cards (each day has its
+        // own breakdown further down instead), but export is available.
+        summaryBlock.style.display = 'none';
+        lastReport = null;
+        lastMultiDayReports = data.reports;
+        renderMultiDayReports(data.reports);
+
+        // Same failures can happen here as in Today view — the underlying
+        // fetches are identical, just applied across more days. Check if
+        // ANY day in the range hit a failure (they're all set the same way
+        // per range, but checking with .some() is a safe habit regardless).
+        var anyLeaveFailed = data.reports.some(function (d) { return d.report.leaveCheckFailed; });
+        var anyAdjustmentFailed = data.reports.some(function (d) { return d.report.scheduleAdjustmentCheckFailed; });
+        if (anyLeaveFailed && anyAdjustmentFailed) {
+          showInfo('Note: leave-checking and schedule-adjustment checking are both temporarily unavailable for this range — some entries may be affected.');
+        } else if (anyLeaveFailed) {
+          showInfo('Note: leave-checking is temporarily unavailable for this range — some entries may actually be on approved leave.');
+        } else if (anyAdjustmentFailed) {
+          showInfo('Note: schedule-adjustment checking is temporarily unavailable for this range — one-off schedule changes won\'t be reflected.');
+        }
+      } else {
+        summaryBlock.style.display = '';
+        lastMultiDayReports = null;
+        renderReport(data.report);
+        lastReport = data.report;
+
+        if (data.report.leaveCheckFailed && data.report.scheduleAdjustmentCheckFailed) {
+          showInfo('Note: leave-checking and schedule-adjustment checking are both temporarily unavailable — some entries may be affected.');
+        } else if (data.report.leaveCheckFailed) {
+          showInfo('Note: leave-checking is temporarily unavailable — some entries may actually be on approved leave.');
+        } else if (data.report.scheduleAdjustmentCheckFailed) {
+          showInfo('Note: schedule-adjustment checking is temporarily unavailable — one-off schedule changes (e.g. a rest day override) won\'t be reflected.');
+        } else {
+          var today = new Date();
+          if (t.toDateString() !== today.toDateString()) {
+            showInfo('Heads up: the data returned looks like it is not from today.');
+          }
+        }
+      }
+
+      applyEmployeeFilter();
+    }).catch(function (err) {
+      setLoadingState(false);
+      // TypeError here means fetch() itself failed (bad URL, network issue,
+      // CORS) — the other error types below all come from explicit throws
+      // above with a message already tailored to what happened.
+      var msg = (err instanceof TypeError)
+        ? 'Could not reach the Shift Board API at the configured URL. Check the URL is correct and the backend is running. (' + err.message + ')'
+        : err.message;
+      showError(msg);
+      document.getElementById('lastUpdated').textContent = 'Failed to load';
+    });
+  }
+
+  document.getElementById('saveUrlBtn').addEventListener('click', function () {
+    var url = document.getElementById('scriptUrlInput').value.trim();
+    if (!url) return;
+    saveUrl(url);
+    fetchReport();
+  });
+
+  document.getElementById('refreshBtn').addEventListener('click', fetchReport);
+  document.getElementById('exportBtn').addEventListener('click', exportToExcel);
+
+  document.getElementById('settingsLink').addEventListener('click', function () {
+    document.getElementById('scriptUrlInput').value = getSavedUrl();
+    showSetup(true);
+  });
+
+  document.getElementById('resetSectionsLink').addEventListener('click', function () {
+    try { localStorage.removeItem('shiftBoardCollapsed'); } catch (e) {}
+    collapsedState = {};
+    if (lastReport) renderReport(lastReport);
+  });
+
+  document.querySelectorAll('.range-btn').forEach(function (btn) {
+    if (btn.id === 'rangeCustom') return; // handled separately below
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.range-btn').forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      selectedDays = parseInt(btn.getAttribute('data-days'), 10);
+      selectedCustomRange = null; // a preset was chosen, so any custom range no longer applies
+      document.getElementById('customRangePanel').style.display = 'none';
+      fetchReport();
+    });
+  });
+
+  // Custom range: toggles a small panel with From/To date inputs (native
+  // date inputs — this is the "calendar" picker, no extra library needed)
+  // instead of fetching immediately, since two dates need to be chosen
+  // first.
+  document.getElementById('rangeCustom').addEventListener('click', function () {
+    var panel = document.getElementById('customRangePanel');
+    var opening = panel.style.display === 'none';
+    panel.style.display = opening ? 'block' : 'none';
+    if (opening) {
+      // Default to a sensible starting point (last 7 days) if nothing's
+      // been picked yet, rather than leaving both fields empty.
+      var toInput = document.getElementById('customRangeTo');
+      var fromInput = document.getElementById('customRangeFrom');
+      if (!toInput.value) {
+        var today = new Date();
+        var weekAgo = new Date(today.getTime() - 6 * 24 * 60 * 60 * 1000);
+        toInput.value = today.toISOString().slice(0, 10);
+        fromInput.value = weekAgo.toISOString().slice(0, 10);
+      }
+    }
+  });
+
+  function customRangeError(msg) {
+    var el = document.getElementById('customRangeError');
+    el.textContent = msg;
+    el.style.display = 'block';
+  }
+
+  document.getElementById('applyCustomRangeBtn').addEventListener('click', function () {
+    document.getElementById('customRangeError').style.display = 'none';
+    var from = document.getElementById('customRangeFrom').value;
+    var to = document.getElementById('customRangeTo').value;
+
+    if (!from || !to) {
+      customRangeError('Pick both a From and a To date.');
+      return;
+    }
+    if (from > to) {
+      customRangeError('The From date must be on or before the To date.');
+      return;
+    }
+    var spanDays = Math.round((new Date(to) - new Date(from)) / (24 * 60 * 60 * 1000)) + 1;
+    if (spanDays > 62) {
+      customRangeError('That range is ' + spanDays + ' days — please pick 62 days or fewer.');
+      return;
+    }
+
+    document.querySelectorAll('.range-btn').forEach(function (b) { b.classList.remove('active'); });
+    document.getElementById('rangeCustom').classList.add('active');
+    selectedDays = 1;
+    selectedCustomRange = { from: from, to: to };
+    fetchReport();
+  });
+
+  // Employee name search — filters visible rows across every group (and
+  // every day, in multi-day view) without changing the underlying data.
+  function applyEmployeeFilter() {
+    var term = document.getElementById('employeeSearch').value.trim().toLowerCase();
+    document.querySelectorAll('#groupsContainer .group').forEach(function (groupEl) {
+      var anyVisible = false;
+      var rows = groupEl.querySelectorAll('tbody tr');
+      rows.forEach(function (tr) {
+        var nameCell = tr.querySelector('.emp-name');
+        var name = nameCell ? nameCell.textContent.toLowerCase() : '';
+        var match = !term || name.indexOf(term) !== -1;
+        tr.classList.toggle('filtered-out', !match);
+        if (match) anyVisible = true;
+      });
+      // Only hide a group entirely if it had real rows to begin with and none matched —
+      // don't hide genuinely-empty groups (those already show "No one in this category").
+      groupEl.classList.toggle('all-filtered', term && rows.length > 0 && !anyVisible);
+    });
+  }
+  document.getElementById('employeeSearch').addEventListener('input', applyEmployeeFilter);
+
+  try {
+    var savedCollapsed = localStorage.getItem('shiftBoardCollapsed');
+    if (savedCollapsed) collapsedState = JSON.parse(savedCollapsed);
+  } catch (e) {}
+
+  // No login gate — go straight to loading the saved URL (or showing the
+  // one-time setup box if there isn't one yet).
+  var savedUrl = getSavedUrl();
+  if (savedUrl) {
+    document.getElementById('scriptUrlInput').value = savedUrl;
+    fetchReport();
+  } else {
+    showSetup(true);
+  }
+</script>
+
+</body>
+</html>
