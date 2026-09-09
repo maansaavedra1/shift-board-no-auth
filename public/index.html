@@ -906,7 +906,8 @@
       // gets parentheses + red, unlike the plain log times shown elsewhere.
       result = timesHtml ? (range + ' <span style="color:var(--late);">(' + timesHtml + ')</span>') : range;
     } else if (status === 'restDay') {
-      result = timesHtml || '—';
+      var restLabel = escapeHtml('On rest day');
+      result = timesHtml ? (restLabel + ' <span style="color:var(--late);">(' + timesHtml + ')</span>') : restLabel;
     } else {
       result = timesHtml || '—';
     }
@@ -935,7 +936,7 @@
       var range = (from && to) ? ('On leave ' + from + ' – ' + to) : 'On approved leave';
       result = times ? (range + ' (' + times + ')') : range;
     } else if (status === 'restDay') {
-      result = times || '—';
+      result = times ? ('On rest day (' + times + ')') : 'On rest day';
     } else {
       result = times || '—';
     }
