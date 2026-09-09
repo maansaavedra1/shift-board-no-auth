@@ -598,7 +598,7 @@
           'System ID': e.systemId != null ? e.systemId : '—',
           Department: e.department || '—',
           Supervisor: e.supervisor || '—',
-          Detail: detailFor(status, e)
+          Detail: detailForPlain(status, e)
         };
       });
 
@@ -636,7 +636,7 @@
             'System ID': e.systemId != null ? e.systemId : '—',
             Department: e.department || '—',
             Supervisor: e.supervisor || '—',
-            Detail: detailFor(status, e)
+            Detail: detailForPlain(status, e)
           });
         });
       });
@@ -867,31 +867,79 @@
     return null;
   }
 
+  // Capitalizes just the first character — used so every Detail cell reads
+  // consistently (e.g. "no log-in yet..." -> "No log-in yet..."), regardless
+  // of which branch below produced the text. Leaves non-letter leads (like
+  // the '—' placeholder) untouched.
+  function capFirst(str) {
+    if (!str) return str;
+    return str.charAt(0).toUpperCase() + str.slice(1);
+  }
+
   function detailFor(status, e) {
+    // This function now returns trusted, pre-escaped HTML (not plain text) —
+    // needed so the "On Leave" case below can include real styled markup
+    // (parentheses + red color) for logged times during approved leave.
+    // Every plain-text piece is explicitly escaped before use, so nothing
+    // here is unsafe to insert directly. Excel export uses detailForPlain()
+    // below instead — a real <span> tag would show up as literal broken
+    // text in a spreadsheet cell.
     var times = logNote(e); // actual check-in/check-out times, shown for every category now
+    var timesHtml = times ? escapeHtml(times) : null;
+    var result;
 
     if (status === 'presentButLate') {
       var context = e.lateMinutes != null ? (e.lateMinutes + ' min late') : 'No log-in (has log-out)';
-      return times ? (context + ' — ' + times) : context;
+      context = escapeHtml(context);
+      result = timesHtml ? (context + ' — ' + timesHtml) : context;
+    } else if (status === 'onTime') {
+      result = timesHtml || '—';
+    } else if (status === 'late' || status === 'didNotReport') {
+      var reason = escapeHtml(e.reason || '');
+      result = timesHtml ? (reason ? (reason + ' — ' + timesHtml) : timesHtml) : (reason || '—');
+    } else if (status === 'onLeave') {
+      var from = formatLeaveDate(e.leaveFrom);
+      var to = formatLeaveDate(e.leaveTo);
+      var range = escapeHtml((from && to) ? ('On leave ' + from + ' – ' + to) : 'On approved leave');
+      // Logs during approved leave are worth flagging visually — someone
+      // checking in while marked on leave is worth a second look, so this
+      // gets parentheses + red, unlike the plain log times shown elsewhere.
+      result = timesHtml ? (range + ' <span style="color:var(--late);">(' + timesHtml + ')</span>') : range;
+    } else if (status === 'restDay') {
+      result = timesHtml || '—';
+    } else {
+      result = timesHtml || '—';
     }
-    if (status === 'onTime') {
-      return times || '—';
-    }
-    if (status === 'late' || status === 'didNotReport') {
+    return capFirst(result);
+  }
+
+  // Plain-text counterpart of detailFor(), for the Excel export — same
+  // wording (including the parentheses around logged times on leave days),
+  // just without any HTML markup, since a spreadsheet cell would otherwise
+  // show the literal tag text instead of applying it as styling.
+  function detailForPlain(status, e) {
+    var times = logNote(e);
+    var result;
+
+    if (status === 'presentButLate') {
+      var context = e.lateMinutes != null ? (e.lateMinutes + ' min late') : 'No log-in (has log-out)';
+      result = times ? (context + ' — ' + times) : context;
+    } else if (status === 'onTime') {
+      result = times || '—';
+    } else if (status === 'late' || status === 'didNotReport') {
       var reason = e.reason || '';
-      if (times) return reason ? (reason + ' — ' + times) : times;
-      return reason || '—';
-    }
-    if (status === 'onLeave') {
+      result = times ? (reason ? (reason + ' — ' + times) : times) : (reason || '—');
+    } else if (status === 'onLeave') {
       var from = formatLeaveDate(e.leaveFrom);
       var to = formatLeaveDate(e.leaveTo);
       var range = (from && to) ? ('On leave ' + from + ' – ' + to) : 'On approved leave';
-      return times ? (range + ' — ' + times) : range;
+      result = times ? (range + ' (' + times + ')') : range;
+    } else if (status === 'restDay') {
+      result = times || '—';
+    } else {
+      result = times || '—';
     }
-    if (status === 'restDay') {
-      return times || '—';
-    }
-    return times || '—';
+    return capFirst(result);
   }
 
   function escapeHtml(str) {
@@ -954,7 +1002,7 @@
             '<td class="emp-name" data-label="Employee">' + escapeHtml(e.name) + '</td>' +
             '<td class="mono-cell" data-label="Department">' + escapeHtml(e.department || '—') + '</td>' +
             '<td class="mono-cell" data-label="Supervisor">' + escapeHtml(e.supervisor || '—') + '</td>' +
-            '<td class="mono-cell" data-label="Detail">' + escapeHtml(detailFor(status, e)) + '</td>' +
+            '<td class="mono-cell" data-label="Detail">' + detailFor(status, e) + '</td>' +
           '</tr>';
         }).join('');
 
