@@ -329,6 +329,15 @@ function classifyEmployeeForDay(emp, dayContext) {
       const shiftEnd = manilaTimeOnDay(dayContext.dayKey, shiftToStr);
       shiftHasEnded = new Date() > shiftEnd;
     }
+    // Defensive fallback: even without valid shift-end-time data (a real
+    // case saw someone stuck on "Late — shift still ongoing" for a day a
+    // week in the past, because their schedule record was missing an end
+    // time for that day), a calendar day that isn't today can never
+    // still be "ongoing". Missing or bad schedule data shouldn't leave
+    // someone misclassified for a day that's obviously already over.
+    if (dayContext.dayKey < formatDateKey(new Date())) {
+      shiftHasEnded = true;
+    }
 
     if (shiftHasEnded) {
       return { status: 'didNotReport', entry: { name, ...contactInfo, loginTime, logoutTime, reason: 'no log-in or log-out, shift already ended' } };
