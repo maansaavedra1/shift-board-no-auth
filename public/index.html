@@ -175,10 +175,12 @@
 
   .summary { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 20px; }
   @media (max-width: 900px) { .summary { grid-template-columns: repeat(3, 1fr); } }
-  .summary-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; position: relative; overflow: hidden; }
+  .summary-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; position: relative; overflow: hidden; cursor: pointer; transition: transform .12s ease, box-shadow .12s ease; display: flex; flex-direction: column; }
+  .summary-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,0.08); }
+  .summary-card:active { transform: translateY(0); }
   .summary-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent-color, var(--text-dim)); }
   .summary-card .label { font-family: var(--font-display); font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-muted); margin-bottom: 6px; }
-  .summary-card .count { font-size: 30px; font-weight: 700; line-height: 1; }
+  .summary-card .count { font-size: 30px; font-weight: 700; line-height: 1; margin-top: auto; }
   .summary-card.late { --accent-color: var(--presentlate); }
   .summary-card.presentbutlate { --accent-color: var(--late); }
   .summary-card.didnotreport { --accent-color: var(--dnr); }
@@ -629,12 +631,12 @@
   </div>
 
   <div class="summary" id="summaryBlock">
-    <div class="summary-card late"><div class="label">Late (Shift Ongoing) <span class="info-icon" data-tooltip="No log-in or log-out recorded yet, and their shift hasn't ended — still time for them to show up."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countLate">—</div></div>
-    <div class="summary-card presentbutlate"><div class="label">Present but Late <span class="info-icon" data-tooltip="Logged in after their shift start time, or has a log-out with no matching log-in (counted as present)."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countPresentButLate">—</div></div>
-    <div class="summary-card didnotreport"><div class="label">Did Not Report <span class="info-icon" data-tooltip="No log-in or log-out at all, and their shift has already ended."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countDidNotReport">—</div></div>
-    <div class="summary-card ontime"><div class="label">On Time <span class="info-icon" data-tooltip="Logged in at or before their scheduled shift start time."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countOntime">—</div></div>
-    <div class="summary-card leave"><div class="label">On Leave <span class="info-icon" data-tooltip="Has an approved leave request covering today."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countLeave">—</div></div>
-    <div class="summary-card restday"><div class="label">Rest Day <span class="info-icon" data-tooltip="Not scheduled to work today per their shift calendar."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countRestDay">—</div></div>
+    <div class="summary-card late" data-status="late"><div class="label">Late (Shift Ongoing) <span class="info-icon" data-tooltip="No log-in or log-out recorded yet, and their shift hasn't ended — still time for them to show up."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countLate">—</div></div>
+    <div class="summary-card presentbutlate" data-status="presentButLate"><div class="label">Present but Late <span class="info-icon" data-tooltip="Logged in after their shift start time, or has a log-out with no matching log-in (counted as present)."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countPresentButLate">—</div></div>
+    <div class="summary-card didnotreport" data-status="didNotReport"><div class="label">Did Not Report <span class="info-icon" data-tooltip="No log-in or log-out at all, and their shift has already ended."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countDidNotReport">—</div></div>
+    <div class="summary-card ontime" data-status="onTime"><div class="label">On Time <span class="info-icon" data-tooltip="Logged in at or before their scheduled shift start time."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countOntime">—</div></div>
+    <div class="summary-card leave" data-status="onLeave"><div class="label">On Leave <span class="info-icon" data-tooltip="Has an approved leave request covering today."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countLeave">—</div></div>
+    <div class="summary-card restday" data-status="restDay"><div class="label">Rest Day <span class="info-icon" data-tooltip="Not scheduled to work today per their shift calendar."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="11"></line><circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none"></circle></svg></span></div><div class="count" id="countRestDay">—</div></div>
   </div>
 
   <div id="groupsContainer"></div>
@@ -642,9 +644,8 @@
   <div class="footer-note">
     This page calls your own Shift Board API URL, which securely holds your Sprout credentials and does the actual API calls —
     your Client Secret never appears in this page. The URL you paste above is saved in this browser only (not sent anywhere else).
-    Department and Supervisor field names are still being confirmed against Sprout's real data — if they show as a dash, that mapping needs adjusting in <code>sprout.js</code>.
     <br><br>
-    <strong>No login is required to view this page.</strong> Anyone with the dashboard's URL can see this data — treat that URL accordingly.
+    <strong>Login required.</strong> This page is only reachable once you're signed in.
   </div>
 
   <div class="site-footer">
@@ -689,7 +690,6 @@
     restDay:         { label: 'On Rest Day', description: 'Not scheduled to work today per their shift calendar.' }
   };
 
-  var collapsedState = {};
   var lastReport = null; // most recent successful report, used for Export
 
   var lastMultiDayReports = null; // set when in multi-day mode, mirrors lastReport for Today mode
@@ -1125,16 +1125,13 @@
       var list = report[status] || [];
       var isEmpty = list.length === 0;
 
-      // Non-empty groups: collapsed by default unless the person has
-      // explicitly expanded this status before (stored as false).
-      // Empty groups: expanded by default unless explicitly collapsed (true).
-      // In multi-day view (forceExpanded), everything starts expanded
-      // instead, since the point there is scanning several days at once —
-      // clicking a header still works to collapse an individual one if wanted.
-      var storedValue = collapsedState[status];
-      var isCollapsed = forceExpanded
-        ? false
-        : (isEmpty ? (storedValue === true) : (storedValue === undefined ? true : storedValue));
+      // Standardized: every category starts collapsed, every time, no
+      // exceptions and nothing remembered between refreshes — compact by
+      // default, expanding anything is purely a per-view, per-click choice
+      // (via the header itself, or the clickable summary cards above).
+      // Multi-day view is the one exception (forceExpanded) — there, the
+      // whole point is scanning several days at once.
+      var isCollapsed = !forceExpanded;
 
       var groupEl = document.createElement('div');
       groupEl.className = 'group ' + status + (isCollapsed ? ' collapsed' : '') + (isEmpty ? ' empty-group' : '');
@@ -1150,11 +1147,6 @@
         '<span class="count-badge">' + list.length + '</span>';
 
       header.addEventListener('click', function () {
-        var newState = !groupEl.classList.contains('collapsed');
-        if (!forceExpanded) {
-          collapsedState[status] = newState;
-          try { localStorage.setItem('shiftBoardCollapsed', JSON.stringify(collapsedState)); } catch (e) {}
-        }
         groupEl.classList.toggle('collapsed');
       });
 
@@ -1522,10 +1514,19 @@
   }
   document.getElementById('employeeSearch').addEventListener('input', applyEmployeeFilter);
 
-  try {
-    var savedCollapsed = localStorage.getItem('shiftBoardCollapsed');
-    if (savedCollapsed) collapsedState = JSON.parse(savedCollapsed);
-  } catch (e) {}
+  // Clicking a summary card jumps to (and expands, if collapsed) that
+  // category's section below — only wired up for the single-day summary,
+  // since the multi-day view has no single summary block to click from.
+  document.querySelectorAll('#summaryBlock .summary-card').forEach(function (card) {
+    card.addEventListener('click', function () {
+      var status = card.getAttribute('data-status');
+      var groupEl = document.querySelector('#groupsContainer .group.' + status);
+      if (!groupEl) return; // nothing rendered yet (e.g. before the first report loads)
+
+      groupEl.classList.remove('collapsed');
+      groupEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
 
   // Everything that actually loads/shows dashboard content — only ever
   // called once a valid session is confirmed (see checkAuthAndStart below).

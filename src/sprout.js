@@ -160,7 +160,20 @@ async function getEmployees(preloadedFirstResponse) {
     if (pageNumber > 50) break;
   }
 
-  return allEmployees;
+  // Excludes resigned and terminated employees — confirmed against real
+  // production data (via a one-time diagnostic check of the actual
+  // employmentStatus values in use) that these are the only two of the
+  // client's originally-requested categories (resigned, terminated,
+  // AWOL, end of contract, OJT Ended) that actually exist as distinct
+  // statuses in this account; the other three aren't used here at all.
+  // Deliberately keeps everyone else, including probationary and
+  // maternity — those are still active, working employees, not
+  // separated ones, even though they're not "regular" status either.
+  const EXCLUDED_EMPLOYMENT_STATUSES = ['resigned', 'terminated'];
+  return allEmployees.filter((emp) => {
+    const status = ((emp.workInformation || {}).employmentStatus || '').toLowerCase();
+    return !EXCLUDED_EMPLOYMENT_STATUSES.includes(status);
+  });
 }
 
 async function getAttendanceLogs(dateFromISO, dateToISO, preloadedFirstResponse) {
