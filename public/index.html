@@ -595,7 +595,7 @@
       var rows = list.map(function (e) {
         return {
           Employee: e.name || '',
-          'System ID': e.systemId != null ? e.systemId : '—',
+          'Employee ID': e.employeeId != null && e.employeeId !== '' ? e.employeeId : '—',
           Department: e.department || '—',
           Supervisor: e.supervisor || '—',
           Detail: detailForPlain(status, e)
@@ -633,7 +633,7 @@
           rows.push({
             Status: meta.label,
             Employee: e.name || '',
-            'System ID': e.systemId != null ? e.systemId : '—',
+            'Employee ID': e.employeeId != null && e.employeeId !== '' ? e.employeeId : '—',
             Department: e.department || '—',
             Supervisor: e.supervisor || '—',
             Detail: detailForPlain(status, e)

@@ -274,10 +274,18 @@ function classifyEmployeeForDay(emp, dayContext) {
   const name = `${basic.firstName || ''} ${basic.lastName || ''}`;
   const bioId = work.biometricId;
   const systemId = basic.systemId;
+  // employeeId is a genuinely separate field from systemId (confirmed
+  // against real production data — e.g. systemId: 1, employeeId: "1" as
+  // a string) even though they can coincidentally match for some
+  // records. Kept alongside systemId (not replacing it) since systemId
+  // is still needed internally for matching leave/adjustment records —
+  // employeeId is purely for display, per the client's request to show
+  // it on the Excel export instead of systemId.
+  const employeeId = basic.employeeId;
 
   const department = work.department || '—';
   const supervisor = work.reportsTo || '—';
-  const contactInfo = { department, supervisor, systemId };
+  const contactInfo = { department, supervisor, systemId, employeeId };
 
   const adjustment = dayContext.adjustmentByEmployeeId[systemId];
   const isRestDay = adjustment
