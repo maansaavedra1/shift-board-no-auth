@@ -482,6 +482,24 @@ function classifyEmployeeForDay(emp, dayContext) {
   const shiftFromStr = (adjustment && adjustment.shiftFrom) || schedule[`${dayContext.weekday}From`];
   const shiftToStr = (adjustment && adjustment.shiftTo) || schedule[`${dayContext.weekday}To`];
 
+  // Adjustment values from Sprout are already full datetimes (confirmed
+  // against real production data — e.g. "2026-09-10T21:00:00"), while the
+  // default weekly schedule only ever gives a bare "HH:MM" time that still
+  // needs combining with the day being checked. These need different
+  // parsing — mixing them up (concatenating an already-full datetime as
+  // if it were bare "HH:MM") silently produced Invalid Date, discovered
+  // via a real case (an employee with a schedule adjustment moving their
+  // shift to 9 PM showed as 893 minutes late — compared against their
+  // unadjusted 6 AM default instead, since the malformed date meant the
+  // adjustment branch never actually took effect for the "is inTime
+  // valid" checks it's used in elsewhere).
+  function resolveShiftBoundary(rawValue, isFromAdjustment) {
+    if (!rawValue) return null;
+    return isFromAdjustment ? parseManilaDateTime(rawValue) : manilaTimeOnDay(dayContext.dayKey, rawValue);
+  }
+  const shiftStartBoundary = resolveShiftBoundary(shiftFromStr, !!(adjustment && adjustment.shiftFrom));
+  const shiftEndBoundary = resolveShiftBoundary(shiftToStr, !!(adjustment && adjustment.shiftTo));
+
   if (!inTime) {
     if (outTime) {
       return {
@@ -491,9 +509,8 @@ function classifyEmployeeForDay(emp, dayContext) {
     }
 
     let shiftHasEnded = false;
-    if (shiftToStr) {
-      const shiftEnd = manilaTimeOnDay(dayContext.dayKey, shiftToStr);
-      shiftHasEnded = new Date() > shiftEnd;
+    if (shiftEndBoundary) {
+      shiftHasEnded = new Date() > shiftEndBoundary;
     }
     // Defensive fallback: even without valid shift-end-time data (a real
     // case saw someone stuck on "Late — shift still ongoing" for a day a
@@ -511,12 +528,11 @@ function classifyEmployeeForDay(emp, dayContext) {
     return { status: 'late', entry: { name, ...contactInfo, loginTime, logoutTime, reason: 'no log-in yet, shift still ongoing' } };
   }
 
-  if (!shiftFromStr) {
+  if (!shiftStartBoundary) {
     return { status: 'onTime', entry: { name, ...contactInfo, loginTime, logoutTime } };
   }
 
-  const shiftStart = manilaTimeOnDay(dayContext.dayKey, shiftFromStr);
-  const lateMinutes = Math.round((inTime - shiftStart) / 60000);
+  const lateMinutes = Math.round((inTime - shiftStartBoundary) / 60000);
   if (lateMinutes > 0) {
     return { status: 'presentButLate', entry: { name, ...contactInfo, loginTime, logoutTime, lateMinutes } };
   }

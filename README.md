@@ -196,6 +196,26 @@ whole picture changed significantly since it was first written:**
   mode — it's exactly as reliable as Schedule Adjustments now, sourced
   from the same background cache.
 
+### A real bug this surfaced: adjustment times were silently broken
+
+Found via a genuinely wrong number in production — an employee with a
+9 PM shift adjustment showed as **893 minutes late**, compared against
+his unadjusted 6 AM default schedule instead. The cause: Sprout's
+adjustment values (`scheduleAdjustment.shiftStart`/`shiftEnd`) are
+**full datetimes** (e.g. `"2026-09-10T21:00:00"`), but the code was
+feeding them into a helper built for the *default* weekly schedule's
+bare `"HH:MM"` values, which re-prepends the day and re-appends `:00` —
+turning an already-full datetime into a malformed string like
+`"2026-09-10T2026-09-10T21:00:00:00"`. That parses to `Invalid Date`,
+which any comparison against silently evaluates as `false` — so the
+adjustment branch never actually took effect for the checks it's used
+in, and the code fell through to comparing against the default schedule
+instead. Fixed by using the correct parser depending on where the value
+actually came from (see `resolveShiftBoundary` in `classifyEmployeeForDay`).
+Confirmed fixed against this exact employee's real adjustment and real
+attendance log — correctly reclassified from 893 minutes late to
+7 minutes *early* once fixed.
+
 ### Login is required
 
 There's a full System ID + password login system — see the
