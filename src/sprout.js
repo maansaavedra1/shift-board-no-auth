@@ -703,4 +703,54 @@ async function computeReportsForCustomRange(fromDateStr, toDateStr) {
   return computeReportsBetweenDates(rangeStart, rangeEnd);
 }
 
-module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus };
+// One-time diagnostic: checks whether the Schedules endpoint's "leaves"
+// field (documented, but never confirmed against real data) actually
+// gets populated for anyone. Rather than needing to already know a real
+// employee who's on leave right now, this scans across every active
+// employee and reports back any day where "leaves" came back non-empty.
+// If Sprout's own docs are accurate, this could mean leave status is
+// already available through the Schedules call — used for Schedule
+// Adjustments already — without needing the separate, currently-blocked
+// Leaves/SearchCriteria endpoint at all. Paced the same way as the
+// schedule-adjustment cache, to stay safely under Sprout's rate limit.
+async function scanForLeavesInSchedules(windowDaysPast, windowDaysFuture) {
+  const employees = await getEmployees();
+  const now = new Date();
+  const rangeStart = new Date(now.getTime() - windowDaysPast * 24 * 60 * 60 * 1000);
+  const rangeEnd = new Date(now.getTime() + windowDaysFuture * 24 * 60 * 60 * 1000);
+  const dateFromISO = `${formatDateKey(rangeStart)}T00:00:00`;
+  const dateToISO = `${formatDateKey(rangeEnd)}T23:59:59`;
+
+  const findings = [];
+  const BATCH_SIZE = 5;
+  const BATCH_DELAY_MS = 1200;
+
+  for (let i = 0; i < employees.length; i += BATCH_SIZE) {
+    const batch = employees.slice(i, i + BATCH_SIZE);
+    await Promise.all(batch.map(async (emp) => {
+      const employeeId = emp.basicInformation && emp.basicInformation.systemId;
+      const name = `${(emp.basicInformation || {}).firstName || ''} ${(emp.basicInformation || {}).lastName || ''}`.trim();
+      if (employeeId == null) return;
+      try {
+        const url = buildApiUrl('timeattendance', `/api/v1/Schedules?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&EmployeeId=${encodeURIComponent(employeeId)}&PageNumber=1&RowsPerPage=100`);
+        const response = await fetchWithRetry(url, { headers: await sproutHeaders() });
+        if (response.status !== 200) return;
+        const data = await response.json();
+        (data.data || []).forEach((day) => {
+          if (day.leaves && day.leaves.length > 0) {
+            findings.push({ employeeId, name, date: (day.date || '').substring(0, 10), leaves: day.leaves });
+          }
+        });
+      } catch (err) {
+        // one employee's failure shouldn't abort the whole scan
+      }
+    }));
+    if (i + BATCH_SIZE < employees.length) {
+      await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+    }
+  }
+
+  return { employeesScanned: employees.length, windowDaysPast, windowDaysFuture, findings };
+}
+
+module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, scanForLeavesInSchedules };

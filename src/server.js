@@ -1,7 +1,7 @@
 const path = require('path');
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus } = require('./sprout');
+const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, scanForLeavesInSchedules } = require('./sprout');
 const configStore = require('./config-store');
 const authStore = require('./auth-store');
 
@@ -235,6 +235,24 @@ app.get('/api/debug/employment-statuses', async (req, res) => {
     return res.json({ ok: true, totalEmployees: employees.length, statusBreakdown: breakdown });
   } catch (err) {
     console.error('Employment status breakdown failed:', err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// One-time diagnostic: scans every active employee's Schedules data for
+// a real, non-empty "leaves" entry — see scanForLeavesInSchedules in
+// sprout.js for the full reasoning. Takes a few minutes to run (same
+// pacing as the schedule-adjustment cache), since it's one call per
+// employee. Query params ?past=N&future=N control the window checked
+// (defaults to 14 days each way).
+app.get('/api/debug/leaves-scan', async (req, res) => {
+  try {
+    const past = parseInt(req.query.past, 10) || 14;
+    const future = parseInt(req.query.future, 10) || 14;
+    const result = await scanForLeavesInSchedules(past, future);
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('Leaves scan failed:', err.message);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
