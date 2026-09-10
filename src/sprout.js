@@ -713,44 +713,82 @@ async function computeReportsForCustomRange(fromDateStr, toDateStr) {
 // Adjustments already — without needing the separate, currently-blocked
 // Leaves/SearchCriteria endpoint at all. Paced the same way as the
 // schedule-adjustment cache, to stay safely under Sprout's rate limit.
-async function scanForLeavesInSchedules(windowDaysPast, windowDaysFuture) {
-  const employees = await getEmployees();
-  const now = new Date();
-  const rangeStart = new Date(now.getTime() - windowDaysPast * 24 * 60 * 60 * 1000);
-  const rangeEnd = new Date(now.getTime() + windowDaysFuture * 24 * 60 * 60 * 1000);
-  const dateFromISO = `${formatDateKey(rangeStart)}T00:00:00`;
-  const dateToISO = `${formatDateKey(rangeEnd)}T23:59:59`;
+//
+// Runs as a background job, not a single blocking request — a scan
+// across hundreds of employees takes several minutes, which is longer
+// than most reverse proxies (including Codespaces' own port forwarding)
+// will hold a request open for. Start it, then poll the status
+// separately, same pattern as the schedule-adjustment cache itself.
+const leavesScanState = {
+  isRunning: false,
+  startedAt: null,
+  completedAt: null,
+  employeesScanned: 0,
+  employeesTotal: 0,
+  findings: [],
+  error: null
+};
 
-  const findings = [];
-  const BATCH_SIZE = 5;
-  const BATCH_DELAY_MS = 1200;
-
-  for (let i = 0; i < employees.length; i += BATCH_SIZE) {
-    const batch = employees.slice(i, i + BATCH_SIZE);
-    await Promise.all(batch.map(async (emp) => {
-      const employeeId = emp.basicInformation && emp.basicInformation.systemId;
-      const name = `${(emp.basicInformation || {}).firstName || ''} ${(emp.basicInformation || {}).lastName || ''}`.trim();
-      if (employeeId == null) return;
-      try {
-        const url = buildApiUrl('timeattendance', `/api/v1/Schedules?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&EmployeeId=${encodeURIComponent(employeeId)}&PageNumber=1&RowsPerPage=100`);
-        const response = await fetchWithRetry(url, { headers: await sproutHeaders() });
-        if (response.status !== 200) return;
-        const data = await response.json();
-        (data.data || []).forEach((day) => {
-          if (day.leaves && day.leaves.length > 0) {
-            findings.push({ employeeId, name, date: (day.date || '').substring(0, 10), leaves: day.leaves });
-          }
-        });
-      } catch (err) {
-        // one employee's failure shouldn't abort the whole scan
-      }
-    }));
-    if (i + BATCH_SIZE < employees.length) {
-      await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
-    }
-  }
-
-  return { employeesScanned: employees.length, windowDaysPast, windowDaysFuture, findings };
+function getLeavesScanStatus() {
+  return { ...leavesScanState, findings: leavesScanState.findings.slice() };
 }
 
-module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, scanForLeavesInSchedules };
+async function startLeavesScan(windowDaysPast, windowDaysFuture) {
+  if (leavesScanState.isRunning) return; // already running — don't start a second overlapping scan
+
+  leavesScanState.isRunning = true;
+  leavesScanState.startedAt = new Date().toISOString();
+  leavesScanState.completedAt = null;
+  leavesScanState.employeesScanned = 0;
+  leavesScanState.findings = [];
+  leavesScanState.error = null;
+
+  try {
+    const employees = await getEmployees();
+    leavesScanState.employeesTotal = employees.length;
+
+    const now = new Date();
+    const rangeStart = new Date(now.getTime() - windowDaysPast * 24 * 60 * 60 * 1000);
+    const rangeEnd = new Date(now.getTime() + windowDaysFuture * 24 * 60 * 60 * 1000);
+    const dateFromISO = `${formatDateKey(rangeStart)}T00:00:00`;
+    const dateToISO = `${formatDateKey(rangeEnd)}T23:59:59`;
+
+    const BATCH_SIZE = 5;
+    const BATCH_DELAY_MS = 1200;
+
+    for (let i = 0; i < employees.length; i += BATCH_SIZE) {
+      const batch = employees.slice(i, i + BATCH_SIZE);
+      await Promise.all(batch.map(async (emp) => {
+        const employeeId = emp.basicInformation && emp.basicInformation.systemId;
+        const name = `${(emp.basicInformation || {}).firstName || ''} ${(emp.basicInformation || {}).lastName || ''}`.trim();
+        if (employeeId == null) return;
+        try {
+          const url = buildApiUrl('timeattendance', `/api/v1/Schedules?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&EmployeeId=${encodeURIComponent(employeeId)}&PageNumber=1&RowsPerPage=100`);
+          const response = await fetchWithRetry(url, { headers: await sproutHeaders() });
+          if (response.status !== 200) return;
+          const data = await response.json();
+          (data.data || []).forEach((day) => {
+            if (day.leaves && day.leaves.length > 0) {
+              leavesScanState.findings.push({ employeeId, name, date: (day.date || '').substring(0, 10), leaves: day.leaves });
+            }
+          });
+        } catch (err) {
+          // one employee's failure shouldn't abort the whole scan
+        }
+      }));
+      leavesScanState.employeesScanned = Math.min(i + BATCH_SIZE, employees.length);
+      if (i + BATCH_SIZE < employees.length) {
+        await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+      }
+    }
+
+    leavesScanState.completedAt = new Date().toISOString();
+  } catch (err) {
+    leavesScanState.error = err.message;
+  } finally {
+    leavesScanState.isRunning = false;
+  }
+}
+
+
+module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, startLeavesScan, getLeavesScanStatus };
