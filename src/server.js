@@ -1,31 +1,114 @@
 const path = require('path');
 const express = require('express');
-const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees } = require('./sprout');
+const cookieParser = require('cookie-parser');
+const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus } = require('./sprout');
 const configStore = require('./config-store');
+const authStore = require('./auth-store');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Needed so req.secure correctly reflects the original client connection
+// (Azure Container Apps — and most cloud hosts — terminate HTTPS at an
+// edge/proxy layer and forward plain HTTP internally; without this,
+// req.secure would always read false even on a real HTTPS deployment,
+// and session cookies would never get their `secure` flag set).
+app.set('trust proxy', 1);
+
 app.use(express.json());
+app.use(cookieParser());
 
 // -----------------------------------------------------------------------
-// NO LOGIN, NO ACCESS CONTROL of any kind in this version.
-// Anyone who can reach this server's URL can view attendance data, AND
-// can view/change the Sprout settings below — there is nothing here
-// checking who's asking. If that's not acceptable, this is the file to
-// come back to and add protection to.
+// Login required for everything below except /health and the static
+// dashboard shell itself (the page has to load before anyone can log in).
+// System ID + password, restricted to a dev-curated allowlist — see
+// README's "Authentication" section for the full setup and reasoning.
+// This app used to have no access control at all; that gap is now closed.
 // -----------------------------------------------------------------------
 
 // Load any previously-saved Sprout credentials (from the settings screen)
 // before anything else, so they're in effect for the very first request.
 configStore.initFromDisk();
 
+// Schedule adjustments require one Sprout API call PER EMPLOYEE (confirmed
+// directly against production — there's no bulk endpoint for this data).
+// At real client scale, that's too slow to run inline on every dashboard
+// request, so it runs here instead: a periodic background refresh that
+// the dashboard reads from whenever it needs adjustment data, never
+// waiting on it directly. See the cache section in sprout.js for the
+// full reasoning.
+//
+// Kicked off once immediately on startup (so the cache isn't empty for
+// the entire first refresh interval), then re-run on a timer. Errors are
+// caught and logged inside refreshScheduleAdjustmentsCache itself — a
+// failed cycle here should never crash the server.
+const SCHEDULE_ADJUSTMENT_REFRESH_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
+refreshScheduleAdjustmentsCache().catch((err) => console.error('Initial schedule adjustment cache load failed:', err.message));
+setInterval(() => {
+  refreshScheduleAdjustmentsCache().catch((err) => console.error('Scheduled adjustment cache refresh failed:', err.message));
+}, SCHEDULE_ADJUSTMENT_REFRESH_INTERVAL_MS);
+
 // Serve the dashboard (index.html) as static files from the same container.
+// Deliberately NOT behind requireSession — the page shell (which contains
+// the login/register form) has to be reachable before anyone can log in.
+// Every actual piece of data lives behind the protected API routes below.
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-// Health check.
+// Health check. Deliberately unprotected — standard practice for
+// infrastructure/uptime checks, and it reveals nothing sensitive.
 app.get('/health', (req, res) => {
   res.json({ ok: true, status: 'healthy' });
+});
+
+function setSessionCookie(res, systemId) {
+  const token = authStore.createSessionToken(systemId);
+  res.cookie(authStore.SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: true, // req.secure is reliable now that 'trust proxy' is set; plain-HTTP local testing still works since browsers only enforce this over an actual HTTPS page
+    sameSite: 'lax',
+    maxAge: authStore.SESSION_TTL_MS
+  });
+}
+
+app.get('/api/auth/session', (req, res) => {
+  const session = authStore.verifySessionToken(req.cookies[authStore.SESSION_COOKIE_NAME]);
+  if (!session) return res.json({ ok: true, loggedIn: false });
+  res.json({ ok: true, loggedIn: true, systemId: session.systemId });
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  const { systemId, password } = req.body || {};
+  try {
+    const employees = await getEmployees();
+    authStore.register(systemId, password, employees);
+    setSessionCookie(res, String(systemId).trim()); // auto-login right after registering
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const { systemId, password } = req.body || {};
+  if (!authStore.verifyLogin(systemId, password)) {
+    return res.status(401).json({ ok: false, error: 'Incorrect System ID or password.' });
+  }
+  setSessionCookie(res, String(systemId).trim());
+  res.json({ ok: true });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie(authStore.SESSION_COOKIE_NAME);
+  res.json({ ok: true });
+});
+
+// Everything from here down requires a valid, logged-in session.
+app.use('/api', authStore.requireSession);
+
+// Lets the dashboard (or a curious dev) check on the background schedule
+// adjustment cache directly, without needing a full report fetch.
+app.get('/api/schedule-adjustment-cache-status', (req, res) => {
+  res.json({ ok: true, status: getScheduleAdjustmentCacheStatus() });
 });
 
 // Settings screen support. SPROUT_BASE is deliberately not included here
@@ -85,7 +168,8 @@ app.get('/api/debug/employee-sample', async (req, res) => {
   }
 });
 
-// The report endpoint — open to anyone who can reach this server.
+// The report endpoint — now requires a logged-in session (see the
+// requireSession middleware registered above).
 app.get('/api/shift-board', async (req, res) => {
   const requestedDays = parseInt(req.query.days, 10);
   const fromDate = req.query.from;
@@ -114,8 +198,9 @@ app.get('/api/shift-board', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Shift Board (no-auth version) listening on port ${PORT}`);
+  console.log(`Shift Board listening on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`Report endpoint (OPEN — no login required): http://localhost:${PORT}/api/shift-board`);
-  console.log(`Settings endpoint (OPEN — no login required): http://localhost:${PORT}/api/settings`);
+  console.log(`Report endpoint (login required): http://localhost:${PORT}/api/shift-board`);
+  console.log(`Settings endpoint (login required): http://localhost:${PORT}/api/settings`);
+  console.log(`Admin allowlist: ${authStore.getAllowlist().length ? authStore.getAllowlist().join(', ') : '(none set — nobody can register yet; set ADMIN_ALLOWLIST)'}`);
 });

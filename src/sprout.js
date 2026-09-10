@@ -224,47 +224,116 @@ async function getApprovedLeaves(dateFromISO, dateToISO, preloadedCreateResponse
   return fetchData.data || [];
 }
 
-async function getScheduleAdjustments(dateFromISO, dateToISO, preloadedFirstResponse) {
-  let allAdjustments = [];
-  let pageNumber = 1;
-  const pageSize = 100;
+// ---------------------------------------------------------------------
+// Schedule adjustment background cache.
+//
+// The only real endpoint for this data (confirmed directly against
+// production, after the original "ScheduleAdjustments" resource turned
+// out not to exist at all) requires one call PER EMPLOYEE:
+//   GET /api/v1/Schedules?DateFrom=...&DateTo=...&EmployeeId=<id>
+// At Firstmac's scale (750+ employees) that's far too slow and far too
+// close to Sprout's rate limit to run on every dashboard refresh — a
+// live user would be stuck waiting minutes for a page load.
+//
+// Instead, this runs as a periodic BACKGROUND job (see startBackgroundJobs
+// in server.js): it walks every employee, paced in small batches so it
+// never bursts past Sprout's rate limit, and stores any day that actually
+// has an adjustment in this in-memory cache. The dashboard itself always
+// reads from whatever's already cached — it never waits on this loop.
+// That means adjustment data can be up to one refresh cycle old (a
+// deliberate, known tradeoff — see README), not something to "fix" later.
+// ---------------------------------------------------------------------
 
-  while (true) {
-    const url = buildApiUrl('timeattendance', `/api/v1/ScheduleAdjustments?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&StatusId=4&SortColumn=DateFiled&SortOrder=asc&RowsPerPage=${pageSize}&PageNumber=${pageNumber}`);
-    const response = (pageNumber === 1 && preloadedFirstResponse)
-      ? preloadedFirstResponse
-      : await fetchWithRetry(url, { headers: await sproutHeaders() });
+const scheduleAdjustmentCache = new Map(); // key: `${employeeId}|${dayKey}` -> { isRestDay, shiftFrom, shiftTo }
+const scheduleAdjustmentCacheState = {
+  lastRefreshedAt: null,   // ISO string, or null if a full cycle has never completed yet
+  isRefreshing: false,
+  lastError: null,
+  employeesProcessed: 0,
+  employeesTotal: 0
+};
 
-    if (response.status !== 200) {
-      throw new Error(`ScheduleAdjustments list request failed: ${await response.text()}`);
-    }
+function getCachedAdjustment(employeeId, dayKey) {
+  return scheduleAdjustmentCache.get(`${employeeId}|${dayKey}`) || null;
+}
+
+function getScheduleAdjustmentCacheStatus() {
+  return { ...scheduleAdjustmentCacheState };
+}
+
+// Fetches one employee's schedule (including any adjustment) for the
+// whole cache window in a single call, and stores any day that actually
+// has an adjustment. Failures for one employee are logged and skipped —
+// they don't stop the rest of the batch from completing.
+async function fetchAndCacheAdjustmentsForEmployee(employeeId, dateFromISO, dateToISO) {
+  try {
+    const url = buildApiUrl('timeattendance', `/api/v1/Schedules?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&EmployeeId=${encodeURIComponent(employeeId)}&PageNumber=1&RowsPerPage=100`);
+    const response = await fetchWithRetry(url, { headers: await sproutHeaders() });
+    if (response.status !== 200) return; // one employee's failure shouldn't break the whole refresh
     const data = await response.json();
-    const page = data.data || [];
-    allAdjustments = allAdjustments.concat(page);
-    if (page.length < pageSize) break;
-    pageNumber++;
-    if (pageNumber > 20) break;
+    (data.data || []).forEach((day) => {
+      if (!day.scheduleAdjustment || !day.date) return;
+      const dayKey = day.date.substring(0, 10);
+      scheduleAdjustmentCache.set(`${employeeId}|${dayKey}`, {
+        isRestDay: !!day.scheduleAdjustment.isRestDay,
+        shiftFrom: day.scheduleAdjustment.shiftStart,
+        shiftTo: day.scheduleAdjustment.shiftEnd
+      });
+    });
+  } catch (err) {
+    // Swallow per-employee errors — logged for visibility, but one bad
+    // employee record shouldn't abort caching for everyone else.
+    console.error(`Schedule adjustment fetch failed for employee ${employeeId}:`, err.message);
   }
+}
 
-  if (allAdjustments.length === 0) return [];
+// Runs one full refresh cycle: every employee, paced in small batches so
+// this stays comfortably under Sprout's rate limit (observed as roughly
+// 10 requests/second) even at Firstmac's employee count. Safe to call
+// repeatedly — guards against overlapping runs.
+async function refreshScheduleAdjustmentsCache() {
+  if (scheduleAdjustmentCacheState.isRefreshing) return; // already running — skip this trigger
+  scheduleAdjustmentCacheState.isRefreshing = true;
+  scheduleAdjustmentCacheState.lastError = null;
 
-  const detailHeaders = await sproutHeaders();
-  const detailResults = await Promise.all(
-    allAdjustments.map(async (item) => {
-      try {
-        const detailResponse = await fetchWithRetry(
-          buildApiUrl('timeattendance', `/api/v1/ScheduleAdjustment/${item.id}`),
-          { headers: detailHeaders }
-        );
-        if (detailResponse.status === 200) return await detailResponse.json();
-        return null;
-      } catch (err) {
-        return null;
+  const BATCH_SIZE = 5;
+  const BATCH_DELAY_MS = 1200; // ~4/sec, safely under the observed ~10/sec limit
+  const WINDOW_DAYS_PAST = 7;
+  const WINDOW_DAYS_FUTURE = 37;
+
+  try {
+    const employees = await getEmployees();
+    scheduleAdjustmentCacheState.employeesTotal = employees.length;
+    scheduleAdjustmentCacheState.employeesProcessed = 0;
+
+    const now = new Date();
+    const rangeStart = new Date(now.getTime() - WINDOW_DAYS_PAST * 24 * 60 * 60 * 1000);
+    const rangeEnd = new Date(now.getTime() + WINDOW_DAYS_FUTURE * 24 * 60 * 60 * 1000);
+    const dateFromISO = `${formatDateKey(rangeStart)}T00:00:00`;
+    const dateToISO = `${formatDateKey(rangeEnd)}T23:59:59`;
+
+    scheduleAdjustmentCache.clear(); // rebuild fresh each cycle — avoids unbounded growth over many refreshes
+
+    for (let i = 0; i < employees.length; i += BATCH_SIZE) {
+      const batch = employees.slice(i, i + BATCH_SIZE);
+      await Promise.all(batch.map((emp) => {
+        const employeeId = emp.basicInformation && emp.basicInformation.systemId;
+        if (employeeId == null) return Promise.resolve();
+        return fetchAndCacheAdjustmentsForEmployee(employeeId, dateFromISO, dateToISO);
+      }));
+      scheduleAdjustmentCacheState.employeesProcessed = Math.min(i + BATCH_SIZE, employees.length);
+      if (i + BATCH_SIZE < employees.length) {
+        await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
       }
-    })
-  );
+    }
 
-  return detailResults.filter((d) => d !== null);
+    scheduleAdjustmentCacheState.lastRefreshedAt = new Date().toISOString();
+  } catch (err) {
+    scheduleAdjustmentCacheState.lastError = err.message;
+    console.error('Schedule adjustment cache refresh failed:', err.message);
+  } finally {
+    scheduleAdjustmentCacheState.isRefreshing = false;
+  }
 }
 
 function classifyEmployeeForDay(emp, dayContext) {
@@ -287,7 +356,7 @@ function classifyEmployeeForDay(emp, dayContext) {
   const supervisor = work.reportsTo || '—';
   const contactInfo = { department, supervisor, systemId, employeeId };
 
-  const adjustment = dayContext.adjustmentByEmployeeId[systemId];
+  const adjustment = getCachedAdjustment(systemId, dayContext.dayKey);
   const isRestDay = adjustment
     ? !!adjustment.isRestDay
     : schedule[`${dayContext.weekday}IsRestday`];
@@ -458,23 +527,6 @@ function buildDayLeaveIndex(allLeaves, dayKey) {
   return leaveByEmployeeId;
 }
 
-function buildDayAdjustmentIndex(scheduleAdjustments, dayKey) {
-  const adjustmentByEmployeeId = {};
-  scheduleAdjustments.forEach((adj) => {
-    const empId = adj.employeeId;
-    if (!empId || !adj.details) return;
-    const dayDetail = adj.details.find((d) => d.date.substring(0, 10) === dayKey);
-    if (dayDetail) {
-      adjustmentByEmployeeId[empId] = {
-        isRestDay: dayDetail.isRestDay,
-        shiftFrom: dayDetail.timeFrom,
-        shiftTo: dayDetail.timeTo
-      };
-    }
-  });
-  return adjustmentByEmployeeId;
-}
-
 async function computeTodayReport() {
   const now = new Date();
   const todayKey = formatDateKey(now);
@@ -482,12 +534,9 @@ async function computeTodayReport() {
   const dateToISO = `${todayKey}T23:59:59`;
   const todayWeekday = weekdayForDayKey(todayKey);
 
-  const adjustmentSearchFrom = `${formatDateKey(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000))}T00:00:00`;
-  const adjustmentSearchTo = `${formatDateKey(new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000))}T23:59:59`;
   const userId = process.env.SPROUT_USER_ID;
 
   let leaveCheckFailed = false;
-  let scheduleAdjustmentCheckFailed = false;
 
   const headers = await sproutHeaders();
   const leaveHeaders = { ...headers, 'UserId': userId, 'Content-Type': 'application/json' };
@@ -495,17 +544,15 @@ async function computeTodayReport() {
   const employeesUrl = buildApiUrl('empservice', '/api/v1/Employees?Include=WorkSchedule&Include=WorkInformation&RowsPerPage=100&PageNumber=1');
   const attendanceUrl = buildApiUrl('timeattendance', `/api/v1/AttendanceLogs?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&RowsPerPage=100&PageNumber=1`);
   const leaveCreateUrl = buildApiUrl('timeattendance', '/api/v1/Leaves/SearchCriteria');
-  const adjustmentsUrl = buildApiUrl('timeattendance', `/api/v1/ScheduleAdjustments?DateFrom=${encodeURIComponent(adjustmentSearchFrom)}&DateTo=${encodeURIComponent(adjustmentSearchTo)}&StatusId=4&SortColumn=DateFiled&SortOrder=asc&RowsPerPage=100&PageNumber=1`);
 
-  const [empResp, attResp, leaveResp, adjResp] = await Promise.allSettled([
+  const [empResp, attResp, leaveResp] = await Promise.allSettled([
     fetchWithRetry(employeesUrl, { headers }),
     fetchWithRetry(attendanceUrl, { headers }),
     fetchWithRetry(leaveCreateUrl, {
       method: 'POST',
       headers: leaveHeaders,
       body: JSON.stringify({ UserId: Number(userId), dateFrom: dateFromISO, dateTo: dateToISO, statusIds: [4], pageNumber: 1, rowsPerPage: 100 })
-    }),
-    fetchWithRetry(adjustmentsUrl, { headers })
+    })
   ]);
 
   const employees = await getEmployees(empResp.status === 'fulfilled' ? empResp.value : undefined);
@@ -518,13 +565,6 @@ async function computeTodayReport() {
     leaveCheckFailed = true;
   }
 
-  let scheduleAdjustments = [];
-  try {
-    scheduleAdjustments = await getScheduleAdjustments(adjustmentSearchFrom, adjustmentSearchTo, adjResp.status === 'fulfilled' ? adjResp.value : undefined);
-  } catch (err) {
-    scheduleAdjustmentCheckFailed = true;
-  }
-
   const attendanceIndex = buildDayAttendanceIndex(logs, todayKey);
   const dayContext = {
     weekday: todayWeekday,
@@ -532,8 +572,10 @@ async function computeTodayReport() {
     dayKey: todayKey,
     firstInByBioId: attendanceIndex.firstInByBioId,
     lastOutByBioId: attendanceIndex.lastOutByBioId,
-    leaveByEmployeeId: buildDayLeaveIndex(leaves, todayKey),
-    adjustmentByEmployeeId: buildDayAdjustmentIndex(scheduleAdjustments, todayKey)
+    leaveByEmployeeId: buildDayLeaveIndex(leaves, todayKey)
+    // Schedule adjustments are read directly from the background cache
+    // inside classifyEmployeeForDay (see getCachedAdjustment) — not
+    // fetched live here. See the cache section above for why.
   };
 
   const report = newEmptyReport();
@@ -543,7 +585,7 @@ async function computeTodayReport() {
   });
 
   report.leaveCheckFailed = leaveCheckFailed;
-  report.scheduleAdjustmentCheckFailed = scheduleAdjustmentCheckFailed;
+  report.scheduleAdjustmentCache = getScheduleAdjustmentCacheStatus();
   return report;
 }
 
@@ -572,15 +614,7 @@ async function computeReportsBetweenDates(rangeStart, rangeEnd) {
     leaveCheckFailed = true;
   }
 
-  let scheduleAdjustments = [];
-  let scheduleAdjustmentCheckFailed = false;
-  try {
-    const adjustmentSearchFrom = `${formatDateKey(new Date(rangeStart.getTime() - 30 * 24 * 60 * 60 * 1000))}T00:00:00`;
-    const adjustmentSearchTo = `${formatDateKey(new Date(rangeEnd.getTime() + 30 * 24 * 60 * 60 * 1000))}T23:59:59`;
-    scheduleAdjustments = await getScheduleAdjustments(adjustmentSearchFrom, adjustmentSearchTo);
-  } catch (err) {
-    scheduleAdjustmentCheckFailed = true;
-  }
+  const cacheStatus = getScheduleAdjustmentCacheStatus();
 
   return dayDates.map((dayDate) => {
     const dayKey = formatDateKey(dayDate);
@@ -593,8 +627,10 @@ async function computeReportsBetweenDates(rangeStart, rangeEnd) {
       dayKey,
       firstInByBioId: attendanceIndex.firstInByBioId,
       lastOutByBioId: attendanceIndex.lastOutByBioId,
-      leaveByEmployeeId: buildDayLeaveIndex(leaves, dayKey),
-      adjustmentByEmployeeId: buildDayAdjustmentIndex(scheduleAdjustments, dayKey)
+      leaveByEmployeeId: buildDayLeaveIndex(leaves, dayKey)
+      // Schedule adjustments are read directly from the background cache
+      // inside classifyEmployeeForDay (see getCachedAdjustment) — not
+      // fetched live here. See the cache section above for why.
     };
 
     const report = newEmptyReport();
@@ -603,7 +639,7 @@ async function computeReportsBetweenDates(rangeStart, rangeEnd) {
       report[result.status].push(result.entry);
     });
     report.leaveCheckFailed = leaveCheckFailed;
-    report.scheduleAdjustmentCheckFailed = scheduleAdjustmentCheckFailed;
+    report.scheduleAdjustmentCache = cacheStatus;
 
     return { dateKey: dayKey, report };
   });
@@ -640,4 +676,4 @@ async function computeReportsForCustomRange(fromDateStr, toDateStr) {
   return computeReportsBetweenDates(rangeStart, rangeEnd);
 }
 
-module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees };
+module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus };

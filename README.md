@@ -1,25 +1,50 @@
-# Shift Board — No Login Version
+# Shift Board
 
-This is the Docker-based Shift Board with **all authentication removed** —
-no Keycloak, no login page, no user management. It's a straight port of
-the Keycloak version with every auth-related piece taken out.
+A Docker-based attendance dashboard pulling live from Sprout HR, with
+System ID + password login restricted to a dev-curated admin allowlist.
 
-## What this means, plainly
+## Authentication
 
-**Anyone who can reach this server's URL can see live attendance data.**
-There is nothing in this version checking who's asking — no username,
-no password, no role, nothing. If the URL is public or guessable, the
-data is effectively public too.
+This app used to have **no login of any kind** — anyone with the URL
+could see attendance data. That's no longer the case. Here's how access
+control actually works now:
 
-This is a real tradeoff, not a bug — it's what was asked for. If that's
-not acceptable for how this will actually be used, the options are:
+**Who can register:** only System IDs listed in the `ADMIN_ALLOWLIST`
+environment variable (comma-separated, e.g.
+`ADMIN_ALLOWLIST=2414,1936,1050`), set at deployment time by whoever's
+running the container. This is the actual gate — being a real Sprout
+employee alone isn't enough to register.
 
-- Put it behind something else that handles access control (e.g. a
-  gate like sproutmarkup.com's own enrollment/login, if that's where
-  this is being hosted)
-- Bring back a lightweight protection layer (even something as simple
-  as a shared access key in the URL, like the Apps Script version uses)
-- Go back to the Keycloak version for real per-person login and roles
+**How registration works:** someone on the allowlist visits the
+dashboard, clicks "Register," enters their System ID and a password of
+their choosing (minimum 8 characters). The server then double-checks
+that System ID against Sprout's *current* employee list — so someone
+can't register under a System ID that isn't a real, active employee,
+even if it ended up on the allowlist by mistake. Passwords are hashed
+with bcrypt before being stored; the plain password is never saved
+anywhere. Registering also logs you in immediately.
+
+**How login works after that:** System ID + the password chosen at
+registration. A signed session cookie (12-hour expiry) is issued —
+signed with `SESSION_SECRET` (see below), not stored server-side beyond
+the account record itself.
+
+**Required environment variables for this to work at all:**
+- `ADMIN_ALLOWLIST` — comma-separated System IDs allowed to register.
+  If unset, *nobody* can register (existing accounts can still log in).
+- `SESSION_SECRET` — a long random string used to sign session cookies.
+  If unset, a random one is generated per process start, which means
+  **everyone gets logged out on every restart** until this is set
+  explicitly. Set it to something fixed in real deployments.
+
+**Where accounts are stored:** `data/admin-accounts.json`, alongside the
+saved Sprout credentials (see `config-store.js` below) — same file, same
+Docker-volume requirement to survive a container restart.
+
+**What's still open, deliberately:** `/health` (for uptime checks) and
+the dashboard's page shell itself (the login form has to be reachable
+before anyone can log in) — but no actual attendance data, settings, or
+employee information is served without a valid session.
 
 ## Why there's still a backend at all
 

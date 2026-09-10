@@ -130,6 +130,20 @@ its original behavior — the Credentials panel stays visible and editable
 after deployment, same as before. This is only worth doing if you
 genuinely expect these values to need changing without a redeploy.
 
+**⚠️ Also required now — two more env vars for login to work at all:**
+```
+--env-vars ADMIN_ALLOWLIST=<comma-separated System IDs> SESSION_SECRET=<a long random string>
+```
+- `ADMIN_ALLOWLIST` — without this, nobody can register a new account at
+  all (existing ones, if any, can still log in).
+- `SESSION_SECRET` — without this, a random key is generated fresh each
+  time the container starts, which means **everyone gets logged out on
+  every restart or redeploy**. Generate one once (e.g.
+  `openssl rand -hex 32`) and use the same value every time you deploy.
+
+See `README.md`'s "Authentication" section for the full picture of how
+registration and login work.
+
 **⚠️ CRITICAL — `SPROUT_BASE` defaults to the SANDBOX environment
 (`gateway-sb.sprout.ph`) if not explicitly set.** This is the one thing
 in this whole deployment that fails *silently* if missed — the app will
@@ -246,7 +260,10 @@ same as any other website.
       and confirm the saved Sprout credentials are still there afterward
       — this is the real test that Step 4/6's persistent storage is
       actually working, not just that saving worked once
-- [ ] Confirm with whoever owns this deployment that the "anyone with
-      the URL has full access" tradeoff is genuinely acceptable here —
-      this isn't a technical test, it's a decision that needs to be
-      made deliberately, not assumed
+- [ ] **Confirm `ADMIN_ALLOWLIST` and `SESSION_SECRET` are both set** —
+      without the first, nobody can register; without the second,
+      everyone gets logged out on every restart
+- [ ] Register a real admin account (using a real, allowlisted System
+      ID) and confirm login works after logging out and back in
+- [ ] Try registering a System ID that's *not* on the allowlist, and
+      confirm it's correctly rejected

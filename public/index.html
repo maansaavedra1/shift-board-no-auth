@@ -413,10 +413,113 @@
   .icon-badge:hover { background: var(--border); color: var(--text-muted); }
   .icon-badge svg { width: 16px; height: 16px; }
   .site-footer-right { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); display: flex; gap: 12px; }
-  .theme-switch-row { display: flex; justify-content: center; margin-top: 16px; }
+  .theme-switch-row { display: flex; justify-content: center; margin-top: 16px; }  /* Login / register gate — shown instead of the dashboard until a
+     valid session exists. Matches the app's existing card/button style
+     rather than introducing a separate visual language. */
+  #authGate {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(160deg, #F5F3FF 0%, #E8FAF8 55%, #F7F9ED 100%);
+  }
+  html.light #authGate { background: linear-gradient(160deg, #F5F3FF 0%, #E8FAF8 55%, #F7F9ED 100%); }
+  #authGate .auth-card {
+    width: 100%;
+    max-width: 380px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 32px 28px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.08);
+  }
+  #authGate .auth-title {
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 22px;
+    margin-bottom: 6px;
+  }
+  #authGate .auth-subtitle {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-bottom: 22px;
+  }
+  #authGate input {
+    width: 100%;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 14px;
+  }
+  #authGate button.auth-submit {
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 12px;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 14px;
+    cursor: pointer;
+    margin-top: 4px;
+  }
+  html.light #authGate button.auth-submit {
+    background: linear-gradient(135deg, #8139EE, #1679FA);
+    color: #fff;
+  }
+  html:not(.light) #authGate button.auth-submit {
+    background: var(--ontime-dim);
+    color: var(--ontime);
+    border: 1px solid var(--ontime);
+  }
+  #authGate .auth-toggle {
+    text-align: center;
+    margin-top: 16px;
+    font-size: 13px;
+  }
+  #authGate .auth-toggle a { color: var(--leave); cursor: pointer; text-decoration: underline; }
+  #authGate .auth-error {
+    background: var(--late-dim);
+    color: var(--late);
+    font-size: 12.5px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    display: none;
+  }
 </style>
 </head>
 <body>
+
+<div id="authGate">
+  <div class="auth-card">
+    <div id="authError" class="auth-error"></div>
+
+    <div id="loginForm">
+      <div class="auth-title">Shift Board Login</div>
+      <div class="auth-subtitle">Sign in with your System ID.</div>
+      <input type="text" id="loginSystemId" placeholder="System ID" autocomplete="username">
+      <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
+      <button class="auth-submit" id="loginSubmitBtn">Log In</button>
+      <div class="auth-toggle">Not registered yet? <a id="showRegisterLink">Register</a></div>
+    </div>
+
+    <div id="registerForm" style="display:none;">
+      <div class="auth-title">Register</div>
+      <div class="auth-subtitle">Only approved System IDs can register. Yours is checked against the current Sprout employee list.</div>
+      <input type="text" id="registerSystemId" placeholder="System ID" autocomplete="username">
+      <input type="password" id="registerPassword" placeholder="Choose a password (min. 8 characters)" autocomplete="new-password">
+      <input type="password" id="registerPasswordConfirm" placeholder="Confirm password" autocomplete="new-password">
+      <button class="auth-submit" id="registerSubmitBtn">Register</button>
+      <div class="auth-toggle">Already registered? <a id="showLoginLink">Log In</a></div>
+    </div>
+  </div>
+</div>
 
 <button id="scrollTopBtn" aria-label="Scroll to top" title="Back to top">
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
@@ -455,6 +558,7 @@
     <span class="settings-link" id="settingsLink">Change URL</span>
     <span class="settings-link" id="resetSectionsLink">Reset section view</span>
     <span class="settings-link" id="sproutSettingsLink">Credentials</span>
+    <span class="settings-link" id="logoutLink">Log out</span>
   </div>
 
   <div class="setup-box" id="sproutSettingsPanel" style="display:none;">
@@ -731,6 +835,22 @@
   }
   function hideInfo() {
     document.getElementById('infoBanner').classList.remove('visible');
+  }
+
+  // Schedule adjustments load in a slow background cache (one Sprout API
+  // call per employee — no bulk option exists), refreshed periodically
+  // rather than on every request. Returns a message only while that cache
+  // hasn't completed even once yet (a brand-new deployment, or one still
+  // recovering from an error) — once it's populated at least one time,
+  // this returns null and no banner shows, since the data is simply
+  // working normally from then on (possibly a few minutes old, not "down").
+  function scheduleAdjustmentCacheMessage(cache) {
+    if (!cache) return null;
+    if (cache.lastRefreshedAt) return null; // has completed at least once — treat as normal, no banner
+    if (cache.lastError) {
+      return 'Schedule adjustments could not load yet (' + cache.lastError + ') — will keep retrying in the background.';
+    }
+    return 'Schedule adjustments are still loading for the first time — one-off schedule changes may not show yet. This can take a few minutes for a large employee list.';
   }
 
   // --- Sprout settings panel: view/save credentials via the server ---
@@ -1192,6 +1312,11 @@
     }
 
     fetch(requestUrl).then(function (response) {
+      if (response.status === 401) {
+        setLoadingState(false);
+        showAuthGate(true);
+        throw new Error('__session_expired__'); // short-circuits the chain below; already handled visually above
+      }
       return response.json();
     }).then(function (data) {
       setLoadingState(false);
@@ -1215,18 +1340,15 @@
         lastMultiDayReports = data.reports;
         renderMultiDayReports(data.reports);
 
-        // Same failures can happen here as in Today view — the underlying
-        // fetches are identical, just applied across more days. Check if
-        // ANY day in the range hit a failure (they're all set the same way
-        // per range, but checking with .some() is a safe habit regardless).
         var anyLeaveFailed = data.reports.some(function (d) { return d.report.leaveCheckFailed; });
-        var anyAdjustmentFailed = data.reports.some(function (d) { return d.report.scheduleAdjustmentCheckFailed; });
-        if (anyLeaveFailed && anyAdjustmentFailed) {
-          showInfo('Note: leave-checking and schedule-adjustment checking are both temporarily unavailable for this range — some entries may be affected.');
+        var adjCache = data.reports.length ? data.reports[0].report.scheduleAdjustmentCache : null;
+        var adjMessage = scheduleAdjustmentCacheMessage(adjCache);
+        if (anyLeaveFailed && adjMessage) {
+          showInfo('Note: leave-checking is temporarily unavailable for this range, and ' + adjMessage.toLowerCase());
         } else if (anyLeaveFailed) {
           showInfo('Note: leave-checking is temporarily unavailable for this range — some entries may actually be on approved leave.');
-        } else if (anyAdjustmentFailed) {
-          showInfo('Note: schedule-adjustment checking is temporarily unavailable for this range — one-off schedule changes won\'t be reflected.');
+        } else if (adjMessage) {
+          showInfo(adjMessage);
         }
       } else {
         summaryBlock.style.display = '';
@@ -1234,12 +1356,13 @@
         renderReport(data.report);
         lastReport = data.report;
 
-        if (data.report.leaveCheckFailed && data.report.scheduleAdjustmentCheckFailed) {
-          showInfo('Note: leave-checking and schedule-adjustment checking are both temporarily unavailable — some entries may be affected.');
+        var adjMsg = scheduleAdjustmentCacheMessage(data.report.scheduleAdjustmentCache);
+        if (data.report.leaveCheckFailed && adjMsg) {
+          showInfo('Note: leave-checking is temporarily unavailable, and ' + adjMsg.toLowerCase());
         } else if (data.report.leaveCheckFailed) {
           showInfo('Note: leave-checking is temporarily unavailable — some entries may actually be on approved leave.');
-        } else if (data.report.scheduleAdjustmentCheckFailed) {
-          showInfo('Note: schedule-adjustment checking is temporarily unavailable — one-off schedule changes (e.g. a rest day override) won\'t be reflected.');
+        } else if (adjMsg) {
+          showInfo(adjMsg);
         } else {
           var today = new Date();
           if (t.toDateString() !== today.toDateString()) {
@@ -1251,6 +1374,7 @@
       applyEmployeeFilter();
     }).catch(function (err) {
       setLoadingState(false);
+      if (err.message === '__session_expired__') return; // already handled — auth gate is shown, no error banner needed
       // TypeError here means fetch() itself failed (bad URL, network issue,
       // CORS) — the other error types below all come from explicit throws
       // above with a message already tailored to what happened.
@@ -1375,17 +1499,117 @@
     if (savedCollapsed) collapsedState = JSON.parse(savedCollapsed);
   } catch (e) {}
 
-  // No login gate — go straight to loading the saved URL (or showing the
-  // one-time setup box if there isn't one yet).
-  var savedUrl = getSavedUrl();
-  if (savedUrl) {
-    document.getElementById('scriptUrlInput').value = savedUrl;
-    fetchReport();
-  } else {
-    showSetup(true);
+  // Everything that actually loads/shows dashboard content — only ever
+  // called once a valid session is confirmed (see checkAuthAndStart below).
+  function startApp() {
+    var savedUrl = getSavedUrl();
+    if (savedUrl) {
+      document.getElementById('scriptUrlInput').value = savedUrl;
+      fetchReport();
+    } else {
+      showSetup(true);
+    }
+    applyCredentialsLockState();
   }
 
-  applyCredentialsLockState();
+  // --- Login / registration gate -----------------------------------------
+
+  function showAuthGate(show) {
+    document.getElementById('authGate').style.display = show ? 'flex' : 'none';
+  }
+  function authError(msg) {
+    var el = document.getElementById('authError');
+    el.textContent = msg;
+    el.style.display = 'block';
+  }
+  function clearAuthError() {
+    document.getElementById('authError').style.display = 'none';
+  }
+
+  document.getElementById('showRegisterLink').addEventListener('click', function () {
+    clearAuthError();
+    document.getElementById('loginForm').style.display = 'none';
+    document.getElementById('registerForm').style.display = 'block';
+  });
+  document.getElementById('showLoginLink').addEventListener('click', function () {
+    clearAuthError();
+    document.getElementById('registerForm').style.display = 'none';
+    document.getElementById('loginForm').style.display = 'block';
+  });
+
+  document.getElementById('loginSubmitBtn').addEventListener('click', function () {
+    clearAuthError();
+    var systemId = document.getElementById('loginSystemId').value.trim();
+    var password = document.getElementById('loginPassword').value;
+    if (!systemId || !password) { authError('Enter your System ID and password.'); return; }
+
+    fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ systemId: systemId, password: password })
+    }).then(function (res) { return res.json().then(function (body) { return { res: res, body: body }; }); })
+      .then(function (result) {
+        if (!result.res.ok || !result.body.ok) {
+          authError(result.body.error || 'Could not log in.');
+          return;
+        }
+        showAuthGate(false);
+        startApp();
+      }).catch(function (err) {
+        authError('Could not log in: ' + err.message);
+      });
+  });
+
+  document.getElementById('registerSubmitBtn').addEventListener('click', function () {
+    clearAuthError();
+    var systemId = document.getElementById('registerSystemId').value.trim();
+    var password = document.getElementById('registerPassword').value;
+    var confirmPassword = document.getElementById('registerPasswordConfirm').value;
+
+    if (!systemId || !password) { authError('Enter your System ID and a password.'); return; }
+    if (password !== confirmPassword) { authError('Passwords do not match.'); return; }
+    if (password.length < 8) { authError('Password must be at least 8 characters.'); return; }
+
+    fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ systemId: systemId, password: password })
+    }).then(function (res) { return res.json().then(function (body) { return { res: res, body: body }; }); })
+      .then(function (result) {
+        if (!result.res.ok || !result.body.ok) {
+          authError(result.body.error || 'Could not register.');
+          return;
+        }
+        showAuthGate(false);
+        startApp();
+      }).catch(function (err) {
+        authError('Could not register: ' + err.message);
+      });
+  });
+
+  document.getElementById('logoutLink').addEventListener('click', function () {
+    fetch('/api/auth/logout', { method: 'POST' }).finally(function () {
+      window.location.reload();
+    });
+  });
+
+  // Checked once on page load. Shows the login/register gate if there's no
+  // valid session; otherwise hides it and starts the dashboard as normal.
+  function checkAuthAndStart() {
+    fetch('/api/auth/session').then(function (res) { return res.json(); }).then(function (data) {
+      if (data.ok && data.loggedIn) {
+        showAuthGate(false);
+        startApp();
+      } else {
+        showAuthGate(true);
+      }
+    }).catch(function () {
+      // If even the session check fails, err toward showing the login
+      // gate rather than silently exposing the dashboard underneath it.
+      showAuthGate(true);
+    });
+  }
+  checkAuthAndStart();
 
   // Scroll-to-top button — appears once scrolled down a bit, hidden near the top.
   var scrollTopBtn = document.getElementById('scrollTopBtn');
