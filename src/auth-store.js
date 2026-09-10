@@ -102,6 +102,24 @@ function accountExists(systemId) {
   return !!accounts[String(systemId).trim()];
 }
 
+// Admin-assisted password reset: any currently logged-in admin can clear
+// another (or their own) account's entry, letting that System ID
+// register fresh with a new password. Deliberately not self-service by
+// the person who forgot their password — since they can't log in, they
+// couldn't trigger this themselves anyway. With only a small, known set
+// of admins, having any one of them vouch for the reset (by already
+// being logged in themselves) is a reasonable bar — see README for the
+// full reasoning and the tradeoffs against a real email-based reset.
+function resetAccount(systemId) {
+  systemId = String(systemId).trim();
+  const accounts = loadAccounts();
+  if (!accounts[systemId]) {
+    throw new Error('No account exists for this System ID.');
+  }
+  delete accounts[systemId];
+  saveAccounts(accounts);
+}
+
 // --- Session tokens -----------------------------------------------------
 // A simple signed cookie: "<systemId>.<expiryMs>.<hmacSignature>". No
 // server-side session store needed — the signature alone proves it
@@ -153,6 +171,7 @@ module.exports = {
   register,
   verifyLogin,
   accountExists,
+  resetAccount,
   createSessionToken,
   verifySessionToken,
   requireSession

@@ -29,6 +29,23 @@ registration. A signed session cookie (12-hour expiry) is issued —
 signed with `SESSION_SECRET` (see below), not stored server-side beyond
 the account record itself.
 
+**Forgotten password:** there's no email-based reset — with only a small
+admin list, that would be real infrastructure (an email account/service,
+reset tokens, etc.) for a rare event. Instead, any *other* currently
+logged-in admin can go to **"Reset an admin account"** in the toolbar,
+enter the forgetful person's System ID, and clear their account entirely
+— they then just register again from scratch with a new password. The
+security model here is simply "already logged in as *some* admin," which
+is a reasonable bar with only a handful of people on the list; it stops
+being reasonable if this list grows large, at which point a real
+email-based reset is worth revisiting.
+
+**Auto-logout after 30 minutes idle:** tracked client-side (mouse,
+keyboard, scroll, or touch activity all reset the countdown) — walking
+away from the dashboard logs you out automatically rather than leaving
+it open indefinitely. This is separate from, and shorter than, the
+12-hour session expiry above; either one can end a session first.
+
 **Required environment variables for this to work at all:**
 - `ADMIN_ALLOWLIST` — comma-separated System IDs allowed to register.
   If unset, *nobody* can register (existing accounts can still log in).

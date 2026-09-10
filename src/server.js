@@ -115,6 +115,24 @@ app.post('/api/auth/logout', (req, res) => {
 // Everything from here down requires a valid, logged-in session.
 app.use('/api', authStore.requireSession);
 
+// Admin-assisted password reset. Requires being logged in as SOME admin
+// already (req.systemId is set by requireSession above) — with only a
+// handful of admins total, any one of them vouching for a reset (by
+// already having a valid session) is the actual security model here.
+// See auth-store.js's resetAccount() for the full reasoning.
+app.post('/api/auth/reset-account', (req, res) => {
+  const { systemId } = req.body || {};
+  if (!systemId) {
+    return res.status(400).json({ ok: false, error: 'System ID is required.' });
+  }
+  try {
+    authStore.resetAccount(systemId);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
 // Lets the dashboard (or a curious dev) check on the background schedule
 // adjustment cache directly, without needing a full report fetch.
 app.get('/api/schedule-adjustment-cache-status', (req, res) => {

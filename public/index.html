@@ -557,9 +557,9 @@
     <span class="status-text" id="lastUpdated">Not connected yet</span>
     <span class="status-text" id="scheduleAdjustmentNote" style="opacity:0.65;"></span>
     <span class="settings-link" id="settingsLink">Change URL</span>
-    <span class="settings-link" id="resetSectionsLink">Reset section view</span>
     <span class="settings-link" id="sproutSettingsLink">Credentials</span>
     <span class="settings-link" id="logoutLink">Log out</span>
+    <span class="settings-link" id="resetAdminLink">Reset an admin account</span>
   </div>
 
   <div class="setup-box" id="sproutSettingsPanel" style="display:none;">
@@ -578,7 +578,20 @@
     <div style="font-size: 11px; opacity: 0.6; margin-top: 14px; line-height: 1.5;">
       Saved server-side, not in your browser — used for every Sprout HR request from here on. Leave a field blank to keep its current value.<br>
       <strong>One-time setup:</strong> since these live on the server, they already work for everyone, on every device — no need to re-enter them elsewhere. The <strong>Shift Board API URL</strong> above works differently — it's saved per-browser, so that one does need re-pasting on another device or browser.<br>
-      <strong>No login protects this page</strong> — anyone with this dashboard's URL can view or change these values.
+      <strong>Login required.</strong> This page is only reachable once you're signed in — see the login screen if you haven't already.
+    </div>
+  </div>
+
+  <div class="setup-box" id="resetAdminPanel" style="display:none;">
+    <div class="label">Reset an admin's account (if they forgot their password)</div>
+    <div id="resetAdminError" class="banner error" style="display:none;"></div>
+    <div id="resetAdminSuccess" class="banner info" style="display:none;"></div>
+
+    <input type="text" id="resetAdminSystemId" placeholder="Their System ID">
+    <button id="resetAdminBtn">Reset This Account</button>
+
+    <div style="font-size: 11px; opacity: 0.6; margin-top: 14px; line-height: 1.5;">
+      Clears their saved password entirely — they'll need to <strong>register again from scratch</strong> with a new password. You're doing this because you're already logged in yourself; with a small admin list, that's the actual verification here, not a formal identity check.
     </div>
   </div>
 
@@ -1422,12 +1435,6 @@
     showSetup(true);
   });
 
-  document.getElementById('resetSectionsLink').addEventListener('click', function () {
-    try { localStorage.removeItem('shiftBoardCollapsed'); } catch (e) {}
-    collapsedState = {};
-    if (lastReport) renderReport(lastReport);
-  });
-
   document.querySelectorAll('.range-btn').forEach(function (btn) {
     if (btn.id === 'rangeCustom') return; // handled separately below
     btn.addEventListener('click', function () {
@@ -1531,6 +1538,29 @@
       showSetup(true);
     }
     applyCredentialsLockState();
+    startIdleLogoutTimer();
+  }
+
+  // Auto-logout after 30 minutes with no mouse/keyboard/scroll/touch
+  // activity — only runs once actually logged in (started from within
+  // startApp itself, never before). Any activity resets the countdown;
+  // it doesn't fire on a fixed schedule regardless of use.
+  var IDLE_LOGOUT_MS = 30 * 60 * 1000;
+  var idleLogoutTimer = null;
+
+  function startIdleLogoutTimer() {
+    function resetIdleTimer() {
+      if (idleLogoutTimer) clearTimeout(idleLogoutTimer);
+      idleLogoutTimer = setTimeout(function () {
+        fetch('/api/auth/logout', { method: 'POST' }).finally(function () {
+          window.location.reload();
+        });
+      }, IDLE_LOGOUT_MS);
+    }
+    ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'].forEach(function (evt) {
+      window.addEventListener(evt, resetIdleTimer, { passive: true });
+    });
+    resetIdleTimer(); // start the countdown immediately on login, not just after the first activity
   }
 
   // --- Login / registration gate -----------------------------------------
@@ -1612,6 +1642,49 @@
     fetch('/api/auth/logout', { method: 'POST' }).finally(function () {
       window.location.reload();
     });
+  });
+
+  // --- Admin-assisted account reset ---
+  var resetAdminOpen = false;
+  document.getElementById('resetAdminLink').addEventListener('click', function () {
+    resetAdminOpen = !resetAdminOpen;
+    document.getElementById('resetAdminPanel').style.display = resetAdminOpen ? 'block' : 'none';
+  });
+
+  document.getElementById('resetAdminBtn').addEventListener('click', function () {
+    var errEl = document.getElementById('resetAdminError');
+    var okEl = document.getElementById('resetAdminSuccess');
+    errEl.style.display = 'none';
+    okEl.style.display = 'none';
+
+    var systemId = document.getElementById('resetAdminSystemId').value.trim();
+    if (!systemId) {
+      errEl.textContent = 'Enter the System ID to reset.';
+      errEl.style.display = 'block';
+      return;
+    }
+    if (!window.confirm('This clears the saved password for System ID ' + systemId + ' — they\'ll need to register again from scratch. Continue?')) {
+      return;
+    }
+
+    fetch('/api/auth/reset-account', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ systemId: systemId })
+    }).then(function (res) { return res.json().then(function (body) { return { res: res, body: body }; }); })
+      .then(function (result) {
+        if (!result.res.ok || !result.body.ok) {
+          errEl.textContent = result.body.error || 'Could not reset that account.';
+          errEl.style.display = 'block';
+          return;
+        }
+        okEl.textContent = 'Done — System ID ' + systemId + ' can now register again with a new password.';
+        okEl.style.display = 'block';
+        document.getElementById('resetAdminSystemId').value = '';
+      }).catch(function (err) {
+        errEl.textContent = 'Could not reset that account: ' + err.message;
+        errEl.style.display = 'block';
+      });
   });
 
   // Checked once on page load. Shows the login/register gate if there's no
