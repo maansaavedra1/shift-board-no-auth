@@ -196,6 +196,34 @@ app.get('/api/debug/employee-sample', async (req, res) => {
   }
 });
 
+// Diagnostic: shows every distinct employment status value actually in
+// use across the real employee list, with a count for each — needed to
+// confirm the exact strings Sprout uses (e.g. "Resigned" vs "resigned")
+// before filtering inactive employees out of the dashboard. One-time
+// tool, same as employee-sample above — remove once that filter is
+// confirmed working correctly against real data.
+app.get('/api/debug/employment-statuses', async (req, res) => {
+  try {
+    const employees = await getEmployees();
+    const counts = {};
+    employees.forEach((emp) => {
+      const work = emp.workInformation || {};
+      const key = JSON.stringify({
+        employmentStatusId: work.employmentStatusId,
+        employmentStatus: work.employmentStatus,
+        employmentStatusLabel: work.employmentStatusLabel
+      });
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    const breakdown = Object.keys(counts).map((key) => ({ ...JSON.parse(key), count: counts[key] }));
+    breakdown.sort((a, b) => b.count - a.count);
+    return res.json({ ok: true, totalEmployees: employees.length, statusBreakdown: breakdown });
+  } catch (err) {
+    console.error('Employment status breakdown failed:', err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // The report endpoint — now requires a logged-in session (see the
 // requireSession middleware registered above).
 app.get('/api/shift-board', async (req, res) => {
