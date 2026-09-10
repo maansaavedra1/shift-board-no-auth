@@ -211,6 +211,30 @@ app.get('/api/debug/employee-sample', async (req, res) => {
   }
 });
 
+// One-time diagnostic: finds an employee's raw record (including their
+// full weekly schedule) by name, for investigating a specific person's
+// classification directly — e.g. an oddly large "late minutes" value
+// possibly caused by an overnight shift crossing a calendar-day boundary.
+// Query with ?name=<substring>, case-insensitive, matches first/last name.
+app.get('/api/debug/employee-lookup', async (req, res) => {
+  try {
+    const nameQuery = (req.query.name || '').toLowerCase();
+    if (!nameQuery) {
+      return res.status(400).json({ ok: false, error: 'Provide ?name=<substring> to search for.' });
+    }
+    const employees = await getEmployees();
+    const matches = employees.filter((emp) => {
+      const basic = emp.basicInformation || {};
+      const fullName = `${basic.firstName || ''} ${basic.lastName || ''}`.toLowerCase();
+      return fullName.includes(nameQuery);
+    });
+    return res.json({ ok: true, matchCount: matches.length, matches });
+  } catch (err) {
+    console.error('Employee lookup failed:', err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // Diagnostic: shows every distinct employment status value actually in
 // use across the real employee list, with a count for each — needed to
 // confirm the exact strings Sprout uses (e.g. "Resigned" vs "resigned")
