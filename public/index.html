@@ -1333,9 +1333,27 @@
     document.getElementById('groupsContainer').classList.toggle('is-loading', isLoading);
   }
 
+  // Fire-and-forget: nudges the background schedule-adjustment sync to
+  // run sooner than its next scheduled interval, whenever the dashboard
+  // itself refreshes — keeps that data closer to real-time on top of the
+  // fixed timer, without making this refresh wait on it. Deliberately
+  // uses the SAME origin as the configured Shift Board API URL (not a
+  // page-relative path) — that's the backend that actually holds the
+  // cache, and it can differ from the page's own origin. Errors here are
+  // silently ignored; this is a nice-to-have nudge, never something the
+  // dashboard's own refresh should be blocked or interrupted by.
+  function nudgeScheduleAdjustmentSync(reportApiUrl) {
+    try {
+      var nudgeUrl = new URL('/api/schedule-adjustment-cache/nudge', reportApiUrl).href;
+      fetch(nudgeUrl, { method: 'POST' }).catch(function () {});
+    } catch (e) {}
+  }
+
   function fetchReport() {
     var url = getSavedUrl();
     if (!url) { showSetup(true); return; }
+
+    nudgeScheduleAdjustmentSync(url);
 
     hideError();
     setLoadingState(true);

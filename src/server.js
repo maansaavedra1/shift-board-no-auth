@@ -139,6 +139,21 @@ app.get('/api/schedule-adjustment-cache-status', (req, res) => {
   res.json({ ok: true, status: getScheduleAdjustmentCacheStatus() });
 });
 
+// Lets the dashboard "nudge" the background schedule-adjustment sync to
+// run sooner than its next scheduled interval — called (fire-and-forget)
+// whenever the dashboard itself refreshes, so active use naturally keeps
+// this data fresher than the fixed timer alone would. Deliberately does
+// NOT await the refresh — responds immediately either way, since making
+// a routine dashboard refresh wait on a multi-minute per-employee sync
+// would be a bad tradeoff (see the cache section in sprout.js). Safe to
+// call as often as the dashboard likes — refreshScheduleAdjustmentsCache
+// already guards against overlapping runs, so this is a no-op if a cycle
+// is already in progress.
+app.post('/api/schedule-adjustment-cache/nudge', (req, res) => {
+  refreshScheduleAdjustmentsCache().catch((err) => console.error('Nudged schedule adjustment refresh failed:', err.message));
+  res.json({ ok: true, status: getScheduleAdjustmentCacheStatus() });
+});
+
 // Settings screen support. SPROUT_BASE is deliberately not included here
 // — see the comment at the top of config-store.js for why.
 app.get('/api/settings', (req, res) => {
