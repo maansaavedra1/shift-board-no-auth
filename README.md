@@ -216,6 +216,36 @@ Confirmed fixed against this exact employee's real adjustment and real
 attendance log — correctly reclassified from 893 minutes late to
 7 minutes *early* once fixed.
 
+### A second, related bug found while verifying the first one
+
+After the fix above, the same employee — the one whose adjustment needs
+2 pages of data (182 days across their history) rather than 1 — kept
+showing the *same* wrong number, even after confirming his real
+adjustment was returned correctly by Sprout. Two real problems, found by
+tracing this all the way through:
+
+1. **A non-retryable HTTP failure (e.g. a 404) for any page was
+   completely silent** — no log line at all, anywhere. Only genuine
+   exceptions (network errors, thrown after retries) were logged; a
+   clean non-200 response just returned quietly. This made a real
+   production issue impossible to find by searching server logs — there
+   was nothing to find.
+2. **The whole cache was wiped and rebuilt from scratch on every single
+   cycle**, meaning if *any* employee's fetch failed on a *given* cycle
+   (more likely for anyone needing multiple pages, since that's more
+   requests and more chances to hit something transient), they'd show
+   *zero* cached data — not stale data, nothing — until a subsequent
+   cycle happened to succeed for them specifically.
+
+Fixed both: HTTP failures are now logged explicitly with the employee ID
+and page number, and each employee's cache entries are only replaced
+once *their own* fetch fully succeeds — a failure for one person no
+longer wipes their last-known-good data, it just keeps showing that
+until the next successful fetch. Confirmed both independently: simulated
+a 404 and confirmed it's now logged (previously silent); simulated a
+transient failure on a second cycle and confirmed the employee's correct
+classification survived unchanged rather than reverting to wrong data.
+
 ### Login is required
 
 There's a full System ID + password login system — see the

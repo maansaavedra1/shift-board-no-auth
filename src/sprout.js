@@ -323,15 +323,35 @@ function getScheduleAdjustmentCacheStatus() {
 // leave) for the whole cache window in a single call, and stores any day
 // that actually has either. Failures for one employee are logged and
 // skipped — they don't stop the rest of the batch from completing.
+//
+// Builds up this employee's new entries in local maps first, and only
+// writes them into the real caches once every page has been fetched
+// successfully — deliberately NOT clearing their existing entries
+// upfront. A transient failure partway through (more likely for anyone
+// needing multiple pages, like an overnight-shift employee with a wide
+// history of adjustments) used to leave that person with nothing cached
+// at all until the next successful cycle; now they just keep showing
+// their last known-good data until a fetch genuinely succeeds again.
 async function fetchAndCacheAdjustmentsForEmployee(employeeId, dateFromISO, dateToISO) {
   const pageSize = 100;
+  const newAdjustments = new Map();
+  const newLeaves = new Map();
   try {
     const headers = await sproutHeaders();
     let pageNumber = 1;
     while (true) {
       const url = buildApiUrl('timeattendance', `/api/v1/Schedules?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&EmployeeId=${encodeURIComponent(employeeId)}&PageNumber=${pageNumber}&RowsPerPage=${pageSize}`);
       const response = await fetchWithRetry(url, { headers });
-      if (response.status !== 200) return; // one employee's failure shouldn't break the whole refresh
+      if (response.status !== 200) {
+        // This used to return here with ZERO logging — a genuinely
+        // silent failure mode that made a real production issue
+        // (an employee's adjustment mysteriously never caching)
+        // impossible to find by searching server logs. Now logged
+        // explicitly, and existing cached data for this employee is
+        // left untouched rather than wiped.
+        console.error(`Schedule/leave fetch failed for employee ${employeeId}, page ${pageNumber}: HTTP ${response.status}`);
+        return;
+      }
 
       const data = await response.json();
       const page = data.data || [];
@@ -339,14 +359,14 @@ async function fetchAndCacheAdjustmentsForEmployee(employeeId, dateFromISO, date
         if (!day.date) return;
         const dayKey = day.date.substring(0, 10);
         if (day.scheduleAdjustment) {
-          scheduleAdjustmentCache.set(`${employeeId}|${dayKey}`, {
+          newAdjustments.set(`${employeeId}|${dayKey}`, {
             isRestDay: !!day.scheduleAdjustment.isRestDay,
             shiftFrom: day.scheduleAdjustment.shiftStart,
             shiftTo: day.scheduleAdjustment.shiftEnd
           });
         }
         if (day.leaves && day.leaves.length > 0) {
-          leaveCache.set(`${employeeId}|${dayKey}`, day.leaves);
+          newLeaves.set(`${employeeId}|${dayKey}`, day.leaves);
         }
       });
 
@@ -357,9 +377,23 @@ async function fetchAndCacheAdjustmentsForEmployee(employeeId, dateFromISO, date
       pageNumber++;
       if (pageNumber > 10) break; // sane upper bound — a ~1000-day span should never actually happen here
     }
+
+    // Every page succeeded — now safely replace this employee's entries:
+    // clear out anything previously cached for them (in case an
+    // adjustment was removed on Sprout's side since last cycle), then
+    // apply everything just fetched.
+    for (const key of scheduleAdjustmentCache.keys()) {
+      if (key.startsWith(`${employeeId}|`)) scheduleAdjustmentCache.delete(key);
+    }
+    for (const key of leaveCache.keys()) {
+      if (key.startsWith(`${employeeId}|`)) leaveCache.delete(key);
+    }
+    newAdjustments.forEach((value, key) => scheduleAdjustmentCache.set(key, value));
+    newLeaves.forEach((value, key) => leaveCache.set(key, value));
   } catch (err) {
     // Swallow per-employee errors — logged for visibility, but one bad
-    // employee record shouldn't abort caching for everyone else.
+    // employee record shouldn't abort caching for everyone else. Their
+    // existing cached entries (if any) are deliberately left untouched.
     console.error(`Schedule adjustment/leave fetch failed for employee ${employeeId}:`, err.message);
   }
 }
@@ -389,8 +423,15 @@ async function refreshScheduleAdjustmentsCache() {
     const dateFromISO = `${formatDateKey(rangeStart)}T00:00:00`;
     const dateToISO = `${formatDateKey(rangeEnd)}T23:59:59`;
 
-    scheduleAdjustmentCache.clear(); // rebuild fresh each cycle — avoids unbounded growth over many refreshes
-    leaveCache.clear();
+    // No longer a blanket clear() here — each employee's entries are now
+    // only replaced once THEIR fetch fully succeeds (see
+    // fetchAndCacheAdjustmentsForEmployee), so a transient failure for
+    // one person doesn't wipe their last known-good data. This does mean
+    // an employee removed from Sprout entirely would keep showing stale
+    // data indefinitely rather than disappearing — an acceptable
+    // tradeoff, since the employment-status filter already removes
+    // resigned/terminated people from getEmployees() itself, so this
+    // cache naturally stops being asked about them going forward too.
 
     for (let i = 0; i < employees.length; i += BATCH_SIZE) {
       const batch = employees.slice(i, i + BATCH_SIZE);
