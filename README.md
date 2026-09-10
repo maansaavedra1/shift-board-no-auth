@@ -168,33 +168,40 @@ accordingly:
 | Token request format | form-urlencoded, `grant_type=client_credentials` | raw JSON, `{"ClientId":...,"Secret":...}` |
 | Data endpoints | `/{service}/api/v1/{Resource}` (e.g. `/timeattendance/api/v1/AttendanceLogs`) | `/api/v1/{Resource}` (service prefix dropped) |
 
-**Confidence level, to be precise about what's actually verified:**
-- **Token endpoint + format, and `AttendanceLogs`** — confirmed directly
-  against Sprout's own Postman documentation (`clients.hrhub.ph`
-  examples, internally consistent, no contradictions found)
-- **`Employees`, `Leaves`, `ScheduleAdjustments` production paths** — NOT
-  independently confirmed. They're inferred by applying the same
-  "service prefix dropped" pattern seen in the confirmed endpoints. The
-  only documentation found for these specific endpoints was in a
-  differently-labeled collection that turned out to contain mislabeled
-  sandbox content (its own instructions said "sandbox account" despite
-  being filed under "PRODUCTION") — so it couldn't be trusted as
-  evidence, and this fix goes with the pattern instead. **Test these
-  three endpoints specifically** once real production data is flowing;
-  if any of them 404, that's the signal this particular inference was
-  wrong for that endpoint, and it may need its own service prefix kept
-  even in production.
-- The token response's field names (`access_token` vs a possible
-  PascalCase `AccessToken`) also weren't confirmed from a saved example
-  response — the code now checks both, and fails with a clear error
-  message (showing the raw response) if neither matches, rather than
-  silently caching an unusable token.
+**Confidence level, to be precise about what's actually verified — this
+whole picture changed significantly since it was first written:**
+- **Token endpoint, `Employees`, `AttendanceLogs`, `Schedules`** —
+  confirmed directly against real production data, not just docs
+- **`ScheduleAdjustments` as its own endpoint never existed at all** —
+  confirmed by testing directly against production (three separate 404s,
+  including the exact sandbox-style query parameters). The real data
+  lives nested inside each day's `Schedules` response instead — see the
+  background cache section in `sprout.js` for the full story of how this
+  was found.
+- **`Leaves/SearchCriteria` is confirmed blocked, specifically on
+  Sprout's side, not a path/format issue.** Sprout's own team confirmed
+  the correct endpoint (`api.sprout.ph`, a genuinely different host than
+  everything else here); we tested it directly and got back a real,
+  specific error — the token our production credentials generate is
+  rejected by that endpoint with `"The issuer
+  'https://sproutauth.hrhub.ph' is invalid"`. This is an account/app
+  registration mismatch on Sprout's infrastructure, not something fixable
+  from this codebase.
+- **Leave status works anyway** — the same `Schedules` response that
+  solved Schedule Adjustments also carries a real, populated `leaves`
+  array per day. Confirmed against actual production data (dozens of
+  real employees, real leave dates, including same-day entries) before
+  switching to it. Leave checking no longer depends on the blocked
+  endpoint at all, and no longer has a "temporarily unavailable" failure
+  mode — it's exactly as reliable as Schedule Adjustments now, sourced
+  from the same background cache.
 
-**This still inherits the whole "no login" caveat from above.** The
-settings panel and its save endpoint have no access control either —
-anyone who can reach this dashboard can view its masked status and
-overwrite the credentials being used. If that's a real concern, this
-needs protection in front of it before relying on it for anything real.
+### Login is required
+
+There's a full System ID + password login system — see the
+"Authentication" section above. The dashboard, its API, and the settings
+endpoint are all behind it; nothing here is reachable without a valid
+session.
 
 ### Persistence — this needs a Docker volume
 

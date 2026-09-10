@@ -201,63 +201,50 @@ async function getAttendanceLogs(dateFromISO, dateToISO, preloadedFirstResponse)
   return allLogs;
 }
 
-async function getApprovedLeaves(dateFromISO, dateToISO, preloadedCreateResponse) {
-  const userId = process.env.SPROUT_USER_ID;
-  const createUrl = buildApiUrl('timeattendance', '/api/v1/Leaves/SearchCriteria');
-  const createHeaders = { ...(await sproutHeaders()), 'UserId': userId, 'Content-Type': 'application/json' };
-
-  const createResponse = preloadedCreateResponse || await fetchWithRetry(createUrl, {
-    method: 'POST',
-    headers: createHeaders,
-    body: JSON.stringify({
-      UserId: Number(userId),
-      dateFrom: dateFromISO,
-      dateTo: dateToISO,
-      statusIds: [4],
-      pageNumber: 1,
-      rowsPerPage: 100
-    })
-  });
-
-  if (createResponse.status !== 201 && createResponse.status !== 200) {
-    throw new Error(`Leaves SearchCriteria (create) failed: ${await createResponse.text()}`);
-  }
-  const createData = await createResponse.json();
-  const searchCriteriaId = createData.searchCriteriaId;
-  if (!searchCriteriaId) return [];
-
-  const fetchUrl = buildApiUrl('timeattendance', `/api/v1/Leaves/SearchCriteria?SearchCriteriaId=${encodeURIComponent(searchCriteriaId)}`);
-  const fetchHeaders = { ...(await sproutHeaders()), 'UserId': userId };
-  const fetchResponse = await fetchWithRetry(fetchUrl, { headers: fetchHeaders });
-
-  if (fetchResponse.status !== 200) {
-    throw new Error(`Leaves SearchCriteria (fetch) failed: ${await fetchResponse.text()}`);
-  }
-  const fetchData = await fetchResponse.json();
-  return fetchData.data || [];
-}
+// NOTE: there used to be a getApprovedLeaves() function here, calling
+// POST /api/v1/Leaves/SearchCriteria directly. That endpoint is
+// currently blocked entirely on Sprout's side (confirmed: a token-issuer
+// mismatch tied to production credentials, unrelated to anything in this
+// code — see README). Leave status is now sourced from the Schedules
+// endpoint's own "leaves" field instead, captured by the same background
+// cache used for schedule adjustments — see getCachedLeave below and the
+// cache section that follows. Confirmed against real production data
+// (real employees, real leave dates, including same-day entries) before
+// this switch was made — not just the documented schema.
 
 // ---------------------------------------------------------------------
-// Schedule adjustment background cache.
+// Schedule adjustment + leave background cache.
 //
-// The only real endpoint for this data (confirmed directly against
-// production, after the original "ScheduleAdjustments" resource turned
-// out not to exist at all) requires one call PER EMPLOYEE:
+// The only real endpoint for schedule adjustments (confirmed directly
+// against production, after the original "ScheduleAdjustments" resource
+// turned out not to exist at all) requires one call PER EMPLOYEE:
 //   GET /api/v1/Schedules?DateFrom=...&DateTo=...&EmployeeId=<id>
 // At Firstmac's scale (750+ employees) that's far too slow and far too
 // close to Sprout's rate limit to run on every dashboard refresh — a
 // live user would be stuck waiting minutes for a page load.
 //
+// As of the most recent check, this SAME response also carries a real,
+// populated "leaves" array per day — confirmed against actual production
+// data (dozens of real employees, real leave dates, including same-day
+// entries), not just the documented schema. Since the separate
+// Leaves/SearchCriteria endpoint is currently blocked entirely on
+// Sprout's side (a token-issuer mismatch tied to production credentials
+// — see README), this cache now also captures leave data from this same
+// per-employee Schedules call, at no extra API cost — one fetch already
+// gives us both adjustments and leave status together. Leave checking no
+// longer depends on that separate endpoint at all.
+//
 // Instead, this runs as a periodic BACKGROUND job (see startBackgroundJobs
 // in server.js): it walks every employee, paced in small batches so it
 // never bursts past Sprout's rate limit, and stores any day that actually
-// has an adjustment in this in-memory cache. The dashboard itself always
-// reads from whatever's already cached — it never waits on this loop.
-// That means adjustment data can be up to one refresh cycle old (a
+// has an adjustment or a leave in these in-memory caches. The dashboard
+// itself always reads from whatever's already cached — it never waits on
+// this loop. That means this data can be up to one refresh cycle old (a
 // deliberate, known tradeoff — see README), not something to "fix" later.
 // ---------------------------------------------------------------------
 
 const scheduleAdjustmentCache = new Map(); // key: `${employeeId}|${dayKey}` -> { isRestDay, shiftFrom, shiftTo }
+const leaveCache = new Map(); // key: `${employeeId}|${dayKey}` -> array of { type, paid, isWhole, isFirstHalf }
 const scheduleAdjustmentCacheState = {
   lastRefreshedAt: null,   // ISO string, or null if a full cycle has never completed yet
   isRefreshing: false,
@@ -270,14 +257,72 @@ function getCachedAdjustment(employeeId, dayKey) {
   return scheduleAdjustmentCache.get(`${employeeId}|${dayKey}`) || null;
 }
 
+function getCachedLeave(employeeId, dayKey) {
+  return leaveCache.get(`${employeeId}|${dayKey}`) || null;
+}
+
+// Reconstructs an approximate leave date range around a given day, since
+// the Schedules-based leave data (see the cache section below) is
+// inherently per-day, not a single request record with its own
+// dateFrom/dateTo the way the old, now-blocked Leaves endpoint provided.
+// Walks backward and forward from the given day, extending the range as
+// long as either (a) the same employee has a leave entry of the same
+// type that day, or (b) it's one of their scheduled rest days — tolerated
+// as a gap within the range, same as a real multi-day leave request
+// would span a weekend, without itself counting as a "leave day". Capped
+// at 14 days each direction as a sane bound; a leave request longer than
+// that would be unusual enough to just show what's directly confirmed.
+function reconstructLeaveRange(employeeId, dayKey, leaveType, schedule) {
+  const MAX_WALK_DAYS = 14;
+
+  function matchesType(entries) {
+    return !!entries && entries.some((l) => l.type === leaveType);
+  }
+  function isScheduledRestDay(someDayKey) {
+    const weekday = weekdayForDayKey(someDayKey);
+    return !!schedule[`${weekday}IsRestday`];
+  }
+  function shiftDayKey(someDayKey, deltaDays) {
+    const d = new Date(`${someDayKey}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + deltaDays);
+    return formatDateKey(d);
+  }
+
+  let startKey = dayKey;
+  for (let i = 1; i <= MAX_WALK_DAYS; i++) {
+    const candidate = shiftDayKey(dayKey, -i);
+    if (matchesType(getCachedLeave(employeeId, candidate))) {
+      startKey = candidate;
+    } else if (isScheduledRestDay(candidate)) {
+      continue; // tolerated gap — keep walking, but don't move startKey to a non-leave day
+    } else {
+      break;
+    }
+  }
+
+  let endKey = dayKey;
+  for (let i = 1; i <= MAX_WALK_DAYS; i++) {
+    const candidate = shiftDayKey(dayKey, i);
+    if (matchesType(getCachedLeave(employeeId, candidate))) {
+      endKey = candidate;
+    } else if (isScheduledRestDay(candidate)) {
+      continue;
+    } else {
+      break;
+    }
+  }
+
+  return { startKey, endKey };
+}
+
 function getScheduleAdjustmentCacheStatus() {
   return { ...scheduleAdjustmentCacheState };
 }
 
-// Fetches one employee's schedule (including any adjustment) for the
-// whole cache window in a single call, and stores any day that actually
-// has an adjustment. Failures for one employee are logged and skipped —
-// they don't stop the rest of the batch from completing.
+// Fetches one employee's schedule (including any adjustment AND any
+// leave) for the whole cache window in a single call, and stores any day
+// that actually has either. Failures for one employee are logged and
+// skipped — they don't stop the rest of the batch from completing.
 async function fetchAndCacheAdjustmentsForEmployee(employeeId, dateFromISO, dateToISO) {
   const pageSize = 100;
   try {
@@ -291,13 +336,18 @@ async function fetchAndCacheAdjustmentsForEmployee(employeeId, dateFromISO, date
       const data = await response.json();
       const page = data.data || [];
       page.forEach((day) => {
-        if (!day.scheduleAdjustment || !day.date) return;
+        if (!day.date) return;
         const dayKey = day.date.substring(0, 10);
-        scheduleAdjustmentCache.set(`${employeeId}|${dayKey}`, {
-          isRestDay: !!day.scheduleAdjustment.isRestDay,
-          shiftFrom: day.scheduleAdjustment.shiftStart,
-          shiftTo: day.scheduleAdjustment.shiftEnd
-        });
+        if (day.scheduleAdjustment) {
+          scheduleAdjustmentCache.set(`${employeeId}|${dayKey}`, {
+            isRestDay: !!day.scheduleAdjustment.isRestDay,
+            shiftFrom: day.scheduleAdjustment.shiftStart,
+            shiftTo: day.scheduleAdjustment.shiftEnd
+          });
+        }
+        if (day.leaves && day.leaves.length > 0) {
+          leaveCache.set(`${employeeId}|${dayKey}`, day.leaves);
+        }
       });
 
       // A wide window (see WINDOW_DAYS_PAST/FUTURE below) can span more
@@ -310,7 +360,7 @@ async function fetchAndCacheAdjustmentsForEmployee(employeeId, dateFromISO, date
   } catch (err) {
     // Swallow per-employee errors — logged for visibility, but one bad
     // employee record shouldn't abort caching for everyone else.
-    console.error(`Schedule adjustment fetch failed for employee ${employeeId}:`, err.message);
+    console.error(`Schedule adjustment/leave fetch failed for employee ${employeeId}:`, err.message);
   }
 }
 
@@ -340,6 +390,7 @@ async function refreshScheduleAdjustmentsCache() {
     const dateToISO = `${formatDateKey(rangeEnd)}T23:59:59`;
 
     scheduleAdjustmentCache.clear(); // rebuild fresh each cycle — avoids unbounded growth over many refreshes
+    leaveCache.clear();
 
     for (let i = 0; i < employees.length; i += BATCH_SIZE) {
       const batch = employees.slice(i, i + BATCH_SIZE);
@@ -406,13 +457,24 @@ function classifyEmployeeForDay(emp, dayContext) {
     return { status: 'restDay', entry: { name, ...contactInfo, loginTime, logoutTime } };
   }
 
-  const leaveInfo = dayContext.leaveByEmployeeId[systemId];
-  if (leaveInfo) {
+  const leaveEntries = getCachedLeave(systemId, dayContext.dayKey);
+  if (leaveEntries && leaveEntries.length > 0) {
+    const types = [...new Set(leaveEntries.map((l) => l.type).filter(Boolean))].join(', ');
+    const anyHalfDay = leaveEntries.some((l) => l.isWhole === false);
+    // Reconstructed from the per-day cache — the primary leave type found
+    // for this specific day is what's used to find the surrounding range,
+    // since a mixed multi-type day (rare) can't cleanly extend in both
+    // directions at once. See reconstructLeaveRange for the full logic.
+    const primaryType = leaveEntries[0] && leaveEntries[0].type;
+    const range = primaryType ? reconstructLeaveRange(systemId, dayContext.dayKey, primaryType, schedule) : null;
     return {
       status: 'onLeave',
       entry: {
         name, ...contactInfo, loginTime, logoutTime,
-        leaveFrom: leaveInfo.dateFrom, leaveTo: leaveInfo.dateTo
+        leaveType: types || 'Leave',
+        leaveIsHalfDay: anyHalfDay,
+        leaveFrom: range ? range.startKey : dayContext.dayKey,
+        leaveTo: range ? range.endKey : dayContext.dayKey
       }
     };
   }
@@ -538,22 +600,6 @@ function buildDayAttendanceIndex(allLogs, dayKey) {
   return { firstInByBioId, lastOutByBioId };
 }
 
-function buildDayLeaveIndex(allLeaves, dayKey) {
-  // Stores the actual leave record (with its date range) per employee,
-  // not just a boolean — needed so "On Leave" can show until when the
-  // employee is on leave, not just that they are.
-  const leaveByEmployeeId = {};
-  allLeaves.forEach((leave) => {
-    if (!leave.dateFrom || !leave.dateTo) return;
-    const fromKey = leave.dateFrom.substring(0, 10);
-    const toKey = leave.dateTo.substring(0, 10);
-    if (fromKey <= dayKey && dayKey <= toKey) {
-      leaveByEmployeeId[leave.employeeId] = { dateFrom: leave.dateFrom, dateTo: leave.dateTo };
-    }
-  });
-  return leaveByEmployeeId;
-}
-
 async function computeTodayReport() {
   const now = new Date();
   const todayKey = formatDateKey(now);
@@ -561,36 +607,18 @@ async function computeTodayReport() {
   const dateToISO = `${todayKey}T23:59:59`;
   const todayWeekday = weekdayForDayKey(todayKey);
 
-  const userId = process.env.SPROUT_USER_ID;
-
-  let leaveCheckFailed = false;
-
   const headers = await sproutHeaders();
-  const leaveHeaders = { ...headers, 'UserId': userId, 'Content-Type': 'application/json' };
 
   const employeesUrl = buildApiUrl('empservice', '/api/v1/Employees?Include=WorkSchedule&Include=WorkInformation&RowsPerPage=100&PageNumber=1');
   const attendanceUrl = buildApiUrl('timeattendance', `/api/v1/AttendanceLogs?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&RowsPerPage=100&PageNumber=1`);
-  const leaveCreateUrl = buildApiUrl('timeattendance', '/api/v1/Leaves/SearchCriteria');
 
-  const [empResp, attResp, leaveResp] = await Promise.allSettled([
+  const [empResp, attResp] = await Promise.allSettled([
     fetchWithRetry(employeesUrl, { headers }),
-    fetchWithRetry(attendanceUrl, { headers }),
-    fetchWithRetry(leaveCreateUrl, {
-      method: 'POST',
-      headers: leaveHeaders,
-      body: JSON.stringify({ UserId: Number(userId), dateFrom: dateFromISO, dateTo: dateToISO, statusIds: [4], pageNumber: 1, rowsPerPage: 100 })
-    })
+    fetchWithRetry(attendanceUrl, { headers })
   ]);
 
   const employees = await getEmployees(empResp.status === 'fulfilled' ? empResp.value : undefined);
   const logs = await getAttendanceLogs(dateFromISO, dateToISO, attResp.status === 'fulfilled' ? attResp.value : undefined);
-
-  let leaves = [];
-  try {
-    leaves = await getApprovedLeaves(dateFromISO, dateToISO, leaveResp.status === 'fulfilled' ? leaveResp.value : undefined);
-  } catch (err) {
-    leaveCheckFailed = true;
-  }
 
   const attendanceIndex = buildDayAttendanceIndex(logs, todayKey);
   const dayContext = {
@@ -598,11 +626,11 @@ async function computeTodayReport() {
     dayDate: now,
     dayKey: todayKey,
     firstInByBioId: attendanceIndex.firstInByBioId,
-    lastOutByBioId: attendanceIndex.lastOutByBioId,
-    leaveByEmployeeId: buildDayLeaveIndex(leaves, todayKey)
-    // Schedule adjustments are read directly from the background cache
-    // inside classifyEmployeeForDay (see getCachedAdjustment) — not
-    // fetched live here. See the cache section above for why.
+    lastOutByBioId: attendanceIndex.lastOutByBioId
+    // Schedule adjustments AND leave status are both read directly from
+    // the background cache inside classifyEmployeeForDay (see
+    // getCachedAdjustment / getCachedLeave) — not fetched live here.
+    // See the cache section above for why.
   };
 
   const report = newEmptyReport();
@@ -611,7 +639,6 @@ async function computeTodayReport() {
     report[result.status].push(result.entry);
   });
 
-  report.leaveCheckFailed = leaveCheckFailed;
   report.scheduleAdjustmentCache = getScheduleAdjustmentCacheStatus();
   return report;
 }
@@ -633,14 +660,6 @@ async function computeReportsBetweenDates(rangeStart, rangeEnd) {
   const employees = await getEmployees();
   const logs = await getAttendanceLogs(dateFromISO, dateToISO);
 
-  let leaves = [];
-  let leaveCheckFailed = false;
-  try {
-    leaves = await getApprovedLeaves(dateFromISO, dateToISO);
-  } catch (err) {
-    leaveCheckFailed = true;
-  }
-
   const cacheStatus = getScheduleAdjustmentCacheStatus();
 
   return dayDates.map((dayDate) => {
@@ -653,11 +672,11 @@ async function computeReportsBetweenDates(rangeStart, rangeEnd) {
       dayDate,
       dayKey,
       firstInByBioId: attendanceIndex.firstInByBioId,
-      lastOutByBioId: attendanceIndex.lastOutByBioId,
-      leaveByEmployeeId: buildDayLeaveIndex(leaves, dayKey)
-      // Schedule adjustments are read directly from the background cache
-      // inside classifyEmployeeForDay (see getCachedAdjustment) — not
-      // fetched live here. See the cache section above for why.
+      lastOutByBioId: attendanceIndex.lastOutByBioId
+      // Schedule adjustments AND leave status are both read directly from
+      // the background cache inside classifyEmployeeForDay (see
+      // getCachedAdjustment / getCachedLeave) — not fetched live here.
+      // See the cache section above for why.
     };
 
     const report = newEmptyReport();
@@ -665,7 +684,6 @@ async function computeReportsBetweenDates(rangeStart, rangeEnd) {
       const result = classifyEmployeeForDay(emp, dayContext);
       report[result.status].push(result.entry);
     });
-    report.leaveCheckFailed = leaveCheckFailed;
     report.scheduleAdjustmentCache = cacheStatus;
 
     return { dateKey: dayKey, report };

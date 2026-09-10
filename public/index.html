@@ -1001,15 +1001,19 @@
     });
   });
 
-  function formatLeaveDate(isoString) {
-    if (!isoString) return null;
-    var d = new Date(isoString);
-    if (isNaN(d.getTime())) return isoString; // fall back to raw value rather than hide it
-    // Explicit Asia/Manila regardless of the viewer's own device/browser
-    // timezone — this data is inherently Philippines-local (that's where
-    // Sprout HR and the shifts themselves are), so it should read the
-    // same correct time whether checked from Manila or from abroad.
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'Asia/Manila' });
+  // Formats a plain "YYYY-MM-DD" date key (not a full ISO datetime) —
+  // used for the reconstructed leave range, since that's inherently
+  // date-only (see reconstructLeaveRange in sprout.js). Parsed as a
+  // literal calendar date rather than through the Date constructor
+  // directly, to avoid any timezone-shift risk that could otherwise
+  // display the day before or after what was actually intended.
+  function formatDateKeyForDisplay(dayKey) {
+    if (!dayKey) return null;
+    var parts = dayKey.split('-');
+    if (parts.length !== 3) return dayKey;
+    var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    if (isNaN(d.getTime())) return dayKey;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   }
 
   function formatLogTime(isoString) {
@@ -1064,9 +1068,14 @@
       var reason = escapeHtml(e.reason || '');
       result = timesHtml ? (reason ? (reason + ' — ' + timesHtml) : timesHtml) : (reason || '—');
     } else if (status === 'onLeave') {
-      var from = formatLeaveDate(e.leaveFrom);
-      var to = formatLeaveDate(e.leaveTo);
-      var range = escapeHtml((from && to) ? ('On leave ' + from + ' – ' + to) : 'On approved leave');
+      var leaveDateText = '';
+      if (e.leaveFrom && e.leaveTo) {
+        var fromDisp = formatDateKeyForDisplay(e.leaveFrom);
+        var toDisp = formatDateKeyForDisplay(e.leaveTo);
+        leaveDateText = (e.leaveFrom === e.leaveTo) ? fromDisp : (fromDisp + ' – ' + toDisp);
+      }
+      var leaveLabel = leaveDateText ? ('On leave (' + leaveDateText + ')') : 'On approved leave';
+      var range = escapeHtml(leaveLabel);
       // Logs during approved leave are worth flagging visually — someone
       // checking in while marked on leave is worth a second look, so this
       // gets parentheses + red, unlike the plain log times shown elsewhere.
@@ -1097,9 +1106,13 @@
       var reason = e.reason || '';
       result = times ? (reason ? (reason + ' — ' + times) : times) : (reason || '—');
     } else if (status === 'onLeave') {
-      var from = formatLeaveDate(e.leaveFrom);
-      var to = formatLeaveDate(e.leaveTo);
-      var range = (from && to) ? ('On leave ' + from + ' – ' + to) : 'On approved leave';
+      var leaveDateText2 = '';
+      if (e.leaveFrom && e.leaveTo) {
+        var fromDisp2 = formatDateKeyForDisplay(e.leaveFrom);
+        var toDisp2 = formatDateKeyForDisplay(e.leaveTo);
+        leaveDateText2 = (e.leaveFrom === e.leaveTo) ? fromDisp2 : (fromDisp2 + ' – ' + toDisp2);
+      }
+      var range = leaveDateText2 ? ('On leave (' + leaveDateText2 + ')') : 'On approved leave';
       result = times ? (range + ' (' + times + ')') : range;
     } else if (status === 'restDay') {
       result = times ? ('On rest day (' + times + ')') : 'On rest day';
@@ -1403,17 +1416,10 @@
         lastMultiDayReports = data.reports;
         renderMultiDayReports(data.reports);
 
-        var anyLeaveFailed = data.reports.some(function (d) { return d.report.leaveCheckFailed; });
         var adjCache = data.reports.length ? data.reports[0].report.scheduleAdjustmentCache : null;
         renderScheduleAdjustmentNote(adjCache);
         var adjMessage = scheduleAdjustmentCacheMessage(adjCache);
-        if (anyLeaveFailed && adjMessage) {
-          showInfo('Note: leave-checking is temporarily unavailable for this range, and ' + adjMessage.toLowerCase());
-        } else if (anyLeaveFailed) {
-          showInfo('Note: leave-checking is temporarily unavailable for this range — some entries may actually be on approved leave.');
-        } else if (adjMessage) {
-          showInfo(adjMessage);
-        }
+        if (adjMessage) showInfo(adjMessage);
       } else {
         summaryBlock.style.display = '';
         lastMultiDayReports = null;
@@ -1422,11 +1428,7 @@
 
         renderScheduleAdjustmentNote(data.report.scheduleAdjustmentCache);
         var adjMsg = scheduleAdjustmentCacheMessage(data.report.scheduleAdjustmentCache);
-        if (data.report.leaveCheckFailed && adjMsg) {
-          showInfo('Note: leave-checking is temporarily unavailable, and ' + adjMsg.toLowerCase());
-        } else if (data.report.leaveCheckFailed) {
-          showInfo('Note: leave-checking is temporarily unavailable — some entries may actually be on approved leave.');
-        } else if (adjMsg) {
+        if (adjMsg) {
           showInfo(adjMsg);
         } else {
           var today = new Date();
