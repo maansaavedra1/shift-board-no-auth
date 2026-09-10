@@ -245,7 +245,7 @@ app.get('/api/debug/employment-statuses', async (req, res) => {
 // start it, GET to poll progress) rather than one long blocking request
 // — a full scan takes several minutes, longer than most reverse proxies
 // (including Codespaces' own port forwarding) will hold a request open.
-app.post('/api/debug/leaves-scan/start', (req, res) => {
+app.get('/api/debug/leaves-scan/start', (req, res) => {
   const past = parseInt(req.query.past, 10) || 14;
   const future = parseInt(req.query.future, 10) || 14;
   startLeavesScan(past, future).catch((err) => console.error('Leaves scan failed:', err.message));
