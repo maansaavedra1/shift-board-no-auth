@@ -1,7 +1,7 @@
 const path = require('path');
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, startLeavesScan, getLeavesScanStatus } = require('./sprout');
+const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, startLeavesScan, getLeavesScanStatus, findEmployeesWithTodayAdjustments } = require('./sprout');
 const configStore = require('./config-store');
 const authStore = require('./auth-store');
 
@@ -278,6 +278,21 @@ app.get('/api/debug/leaves-scan/start', (req, res) => {
 
 app.get('/api/debug/leaves-scan/status', (req, res) => {
   res.json({ ok: true, status: getLeavesScanStatus() });
+});
+
+// One-time diagnostic: shows everyone with a real schedule adjustment
+// today, and which category they actually landed in — for finding a
+// real candidate to verify the shift-boundary parsing fix against (see
+// README's "A real bug this surfaced" section). Fast — uses only data
+// already cached, no new Sprout calls.
+app.get('/api/debug/today-adjustments', async (req, res) => {
+  try {
+    const result = await findEmployeesWithTodayAdjustments();
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('Today-adjustments check failed:', err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // The report endpoint — now requires a logged-in session (see the

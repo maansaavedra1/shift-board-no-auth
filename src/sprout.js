@@ -824,5 +824,36 @@ async function startLeavesScan(windowDaysPast, windowDaysFuture) {
   }
 }
 
+// One-time diagnostic: finds everyone with a real schedule adjustment
+// cached for TODAY specifically, and shows which category they actually
+// landed in — used to find a real candidate for verifying the
+// shift-boundary parsing fix (see README's "A real bug this surfaced"
+// section). Uses only data already on hand (the existing background
+// cache + one normal report computation) — no extra Sprout API calls.
+async function findEmployeesWithTodayAdjustments() {
+  const todayKey = formatDateKey(new Date());
+  const employees = await getEmployees();
+  const report = await computeTodayReport();
 
-module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, startLeavesScan, getLeavesScanStatus };
+  const categoryByName = {};
+  Object.keys(report).forEach((status) => {
+    if (!Array.isArray(report[status])) return; // skip non-category fields like scheduleAdjustmentCache
+    report[status].forEach((entry) => {
+      categoryByName[entry.systemId] = status;
+    });
+  });
+
+  const results = employees
+    .map((emp) => {
+      const systemId = emp.basicInformation && emp.basicInformation.systemId;
+      const name = `${(emp.basicInformation || {}).firstName || ''} ${(emp.basicInformation || {}).lastName || ''}`.trim();
+      const adjustment = getCachedAdjustment(systemId, todayKey);
+      if (!adjustment) return null;
+      return { systemId, name, adjustment, currentCategory: categoryByName[systemId] || 'unknown' };
+    })
+    .filter(Boolean);
+
+  return { todayKey, count: results.length, results };
+}
+
+module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, startLeavesScan, getLeavesScanStatus, findEmployeesWithTodayAdjustments };
