@@ -1115,9 +1115,8 @@
     return div.innerHTML;
   }
 
-  function renderGroups(report, containerEl, options) {
+  function renderGroups(report, containerEl) {
     var container = containerEl || document.getElementById('groupsContainer');
-    var forceExpanded = options && options.forceExpanded;
     container.innerHTML = '';
 
     STATUS_ORDER.forEach(function (status) {
@@ -1125,13 +1124,12 @@
       var list = report[status] || [];
       var isEmpty = list.length === 0;
 
-      // Standardized: every category starts collapsed, every time, no
-      // exceptions and nothing remembered between refreshes — compact by
-      // default, expanding anything is purely a per-view, per-click choice
-      // (via the header itself, or the clickable summary cards above).
-      // Multi-day view is the one exception (forceExpanded) — there, the
-      // whole point is scanning several days at once.
-      var isCollapsed = !forceExpanded;
+      // Standardized everywhere — single-day and multi-day alike: every
+      // category starts collapsed, every time, no exceptions and nothing
+      // remembered between refreshes. Expanding anything is purely a
+      // per-view, per-click choice — via a category's own header, a
+      // clickable summary card, or a multi-day quick-scan pill.
+      var isCollapsed = true;
 
       var groupEl = document.createElement('div');
       groupEl.className = 'group ' + status + (isCollapsed ? ' collapsed' : '') + (isEmpty ? ' empty-group' : '');
@@ -1266,16 +1264,39 @@
           var deltaClass = d > 0 ? 'delta-up' : 'delta-down';
           deltaHtml = ' <span class="quick-delta ' + deltaClass + '">' + arrow + Math.abs(d) + '</span>';
         }
-        return '<span class="quick-pill ' + status.toLowerCase() + '"><span class="quick-dot"></span>' + meta.label + ': <b>' + count + '</b>' + deltaHtml + '</span>';
+        return '<span class="quick-pill ' + status.toLowerCase() + '" data-status="' + status + '"><span class="quick-dot"></span>' + meta.label + ': <b>' + count + '</b>' + deltaHtml + '</span>';
       }).join('');
       dayBlock.appendChild(quickScan);
+
+      // Clicking a pill jumps straight to that category within this same
+      // day — makes the day active first if it wasn't already (compact
+      // days hide their detail tables entirely until activated), then
+      // scrolls to that specific status's group. Scoped to THIS day-block
+      // specifically, since every day has its own group with the same
+      // status classes — a plain document-wide lookup would always hit
+      // whichever day happens to come first in the page.
+      quickScan.querySelectorAll('.quick-pill').forEach(function (pill) {
+        pill.style.cursor = 'pointer';
+        pill.addEventListener('click', function (e) {
+          e.stopPropagation(); // don't also trigger the heading's click-to-activate handler
+          var status = pill.getAttribute('data-status');
+          if (!dayBlock.classList.contains('active')) {
+            setActiveDayBlock(dayResult.dateKey);
+          }
+          var groupEl = dayBlock.querySelector('.group.' + status);
+          if (groupEl) {
+            groupEl.classList.remove('collapsed');
+            groupEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        });
+      });
 
       // Full per-category tables — only the active day shows these; other
       // days stay compact (heading + quick-scan counts only) until clicked.
       var subContainer = document.createElement('div');
       subContainer.className = 'day-detail-groups';
       dayBlock.appendChild(subContainer);
-      renderGroups(dayResult.report, subContainer, { forceExpanded: true });
+      renderGroups(dayResult.report, subContainer);
 
       container.appendChild(dayBlock);
     });
