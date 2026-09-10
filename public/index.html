@@ -555,6 +555,7 @@
     <button class="refresh-btn" id="refreshBtn">Refresh</button>
     <button class="refresh-btn" id="exportBtn">Export to Excel</button>
     <span class="status-text" id="lastUpdated">Not connected yet</span>
+    <span class="status-text" id="scheduleAdjustmentNote" style="opacity:0.65;"></span>
     <span class="settings-link" id="settingsLink">Change URL</span>
     <span class="settings-link" id="resetSectionsLink">Reset section view</span>
     <span class="settings-link" id="sproutSettingsLink">Credentials</span>
@@ -851,6 +852,24 @@
       return 'Schedule adjustments could not load yet (' + cache.lastError + ') — will keep retrying in the background.';
     }
     return 'Schedule adjustments are still loading for the first time — one-off schedule changes may not show yet. This can take a few minutes for a large employee list.';
+  }
+
+  // Small, persistent (not just cold-start) note next to "Last updated" —
+  // this refreshes far more often now (every ~5 minutes, close to
+  // continuous given how long one cycle takes at this employee count),
+  // so it's worth always showing when it last actually completed, not
+  // just flagging the one-time cold-start wait.
+  function renderScheduleAdjustmentNote(cache) {
+    var el = document.getElementById('scheduleAdjustmentNote');
+    if (!cache) { el.textContent = ''; return; }
+    if (cache.lastRefreshedAt) {
+      var t = new Date(cache.lastRefreshedAt);
+      el.textContent = '· Schedule adjustments synced ' + t.toLocaleTimeString('en-PH', { hour12: false });
+    } else if (cache.isRefreshing) {
+      el.textContent = '· Schedule adjustments syncing for the first time…';
+    } else {
+      el.textContent = '';
+    }
   }
 
   // --- Sprout settings panel: view/save credentials via the server ---
@@ -1342,6 +1361,7 @@
 
         var anyLeaveFailed = data.reports.some(function (d) { return d.report.leaveCheckFailed; });
         var adjCache = data.reports.length ? data.reports[0].report.scheduleAdjustmentCache : null;
+        renderScheduleAdjustmentNote(adjCache);
         var adjMessage = scheduleAdjustmentCacheMessage(adjCache);
         if (anyLeaveFailed && adjMessage) {
           showInfo('Note: leave-checking is temporarily unavailable for this range, and ' + adjMessage.toLowerCase());
@@ -1356,6 +1376,7 @@
         renderReport(data.report);
         lastReport = data.report;
 
+        renderScheduleAdjustmentNote(data.report.scheduleAdjustmentCache);
         var adjMsg = scheduleAdjustmentCacheMessage(data.report.scheduleAdjustmentCache);
         if (data.report.leaveCheckFailed && adjMsg) {
           showInfo('Note: leave-checking is temporarily unavailable, and ' + adjMsg.toLowerCase());

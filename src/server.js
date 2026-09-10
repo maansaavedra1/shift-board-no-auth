@@ -38,11 +38,21 @@ configStore.initFromDisk();
 // waiting on it directly. See the cache section in sprout.js for the
 // full reasoning.
 //
+// One full cycle (750 employees, ±90-day window needing 2 pages each)
+// takes roughly 5-6 minutes on its own. This interval is set shorter than
+// that on purpose — refreshScheduleAdjustmentsCache() guards against
+// overlapping runs, so in practice this means each new cycle starts
+// again almost immediately after the previous one finishes, rather than
+// sitting idle between them. That's a deliberate choice for freshness,
+// not an oversight — it does mean sustained, near-continuous request
+// traffic to Sprout (still paced at ~4-5/sec, safely under the observed
+// rate limit) rather than a short burst every 20 minutes.
+//
 // Kicked off once immediately on startup (so the cache isn't empty for
-// the entire first refresh interval), then re-run on a timer. Errors are
+// the entire first cycle), then re-triggered on this timer.  Errors are
 // caught and logged inside refreshScheduleAdjustmentsCache itself — a
 // failed cycle here should never crash the server.
-const SCHEDULE_ADJUSTMENT_REFRESH_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
+const SCHEDULE_ADJUSTMENT_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 refreshScheduleAdjustmentsCache().catch((err) => console.error('Initial schedule adjustment cache load failed:', err.message));
 setInterval(() => {
   refreshScheduleAdjustmentsCache().catch((err) => console.error('Scheduled adjustment cache refresh failed:', err.message));

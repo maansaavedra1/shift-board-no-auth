@@ -266,20 +266,34 @@ function getScheduleAdjustmentCacheStatus() {
 // has an adjustment. Failures for one employee are logged and skipped —
 // they don't stop the rest of the batch from completing.
 async function fetchAndCacheAdjustmentsForEmployee(employeeId, dateFromISO, dateToISO) {
+  const pageSize = 100;
   try {
-    const url = buildApiUrl('timeattendance', `/api/v1/Schedules?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&EmployeeId=${encodeURIComponent(employeeId)}&PageNumber=1&RowsPerPage=100`);
-    const response = await fetchWithRetry(url, { headers: await sproutHeaders() });
-    if (response.status !== 200) return; // one employee's failure shouldn't break the whole refresh
-    const data = await response.json();
-    (data.data || []).forEach((day) => {
-      if (!day.scheduleAdjustment || !day.date) return;
-      const dayKey = day.date.substring(0, 10);
-      scheduleAdjustmentCache.set(`${employeeId}|${dayKey}`, {
-        isRestDay: !!day.scheduleAdjustment.isRestDay,
-        shiftFrom: day.scheduleAdjustment.shiftStart,
-        shiftTo: day.scheduleAdjustment.shiftEnd
+    const headers = await sproutHeaders();
+    let pageNumber = 1;
+    while (true) {
+      const url = buildApiUrl('timeattendance', `/api/v1/Schedules?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&EmployeeId=${encodeURIComponent(employeeId)}&PageNumber=${pageNumber}&RowsPerPage=${pageSize}`);
+      const response = await fetchWithRetry(url, { headers });
+      if (response.status !== 200) return; // one employee's failure shouldn't break the whole refresh
+
+      const data = await response.json();
+      const page = data.data || [];
+      page.forEach((day) => {
+        if (!day.scheduleAdjustment || !day.date) return;
+        const dayKey = day.date.substring(0, 10);
+        scheduleAdjustmentCache.set(`${employeeId}|${dayKey}`, {
+          isRestDay: !!day.scheduleAdjustment.isRestDay,
+          shiftFrom: day.scheduleAdjustment.shiftStart,
+          shiftTo: day.scheduleAdjustment.shiftEnd
+        });
       });
-    });
+
+      // A wide window (see WINDOW_DAYS_PAST/FUTURE below) can span more
+      // days than fit on one page — this loop keeps paging until Sprout
+      // returns a short page, rather than silently truncating at 100 days.
+      if (page.length < pageSize) break;
+      pageNumber++;
+      if (pageNumber > 10) break; // sane upper bound — a ~1000-day span should never actually happen here
+    }
   } catch (err) {
     // Swallow per-employee errors — logged for visibility, but one bad
     // employee record shouldn't abort caching for everyone else.
@@ -298,8 +312,8 @@ async function refreshScheduleAdjustmentsCache() {
 
   const BATCH_SIZE = 5;
   const BATCH_DELAY_MS = 1200; // ~4/sec, safely under the observed ~10/sec limit
-  const WINDOW_DAYS_PAST = 7;
-  const WINDOW_DAYS_FUTURE = 37;
+  const WINDOW_DAYS_PAST = 90;
+  const WINDOW_DAYS_FUTURE = 90;
 
   try {
     const employees = await getEmployees();
