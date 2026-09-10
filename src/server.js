@@ -35,6 +35,10 @@ app.get('/api/settings', (req, res) => {
 });
 
 app.post('/api/settings', (req, res) => {
+  if (configStore.DEPLOYMENT_LOCKED) {
+    return res.status(403).json({ ok: false, error: 'Credentials are set at deployment time for this installation and cannot be changed here.' });
+  }
+
   const body = req.body || {};
   const allowedKeys = configStore.EDITABLE_FIELDS;
   const submitted = {};

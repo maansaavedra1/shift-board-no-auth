@@ -77,30 +77,41 @@ not otherwise shown on the dashboard. Treat it the same as the rest of
 this app's data exposure — remove it once no longer needed, or restrict
 access if this deployment needs to stay live longer-term.
 
-## Setting Sprout credentials through the dashboard
+## Setting Sprout credentials
 
-Instead of (or in addition to) setting Sprout credentials via `.env`,
-there's now a **"Sprout settings"** link in the dashboard's toolbar. It
-opens a small panel to view masked status and submit new values for:
+There are now two ways to provide the four Sprout credentials (Client ID,
+Client Secret, Subscription Key, User ID) — pick whichever fits how this
+is being deployed.
 
-- Sprout Client ID
-- Sprout Client Secret
-- Sprout Subscription Key
-- Sprout User ID
+**Option A — bake them in at deployment (recommended for this build,
+since it's for one specific client).** Set all four as environment
+variables alongside `SPROUT_BASE` (see `AZURE_DEPLOYMENT.md`). When all
+four are present this way, the dashboard automatically detects it and
+**hides its Credentials panel entirely** — the person using the
+dashboard never sees a settings screen and can't change these values
+after deployment (the save endpoint refuses to, even if someone tried
+via a direct API call). This is the safer default: fewer moving parts
+for the end user, and no unauthenticated panel left exposed for anyone
+to tamper with.
 
-Submitted values are sent to this app's own server (same-origin, so no
-CORS issue) and saved to `data/sprout-config.json` — **never sent to or
-stored in the browser**, and the real secret value is never sent back to
-the browser again after saving (only "•••• last4" previews, and the
-Client Secret shows only as "saved", no preview at all).
+**Option B — leave them unset, and set them later through the
+dashboard's "Credentials" panel.** Only relevant if these values might
+need to change without a redeploy. Submitted values are sent to this
+app's own server (same-origin, so no CORS issue) and saved to
+`data/sprout-config.json` — **never sent to or stored in the browser**,
+and the real secret value is never sent back to the browser again after
+saving (only "•••• last4" previews, and the Client Secret shows only as
+"saved", no preview at all). In this mode, the panel stays visible and
+editable to anyone who can reach the dashboard's URL, since this version
+has no login of any kind.
 
-**`SPROUT_BASE` (the API's domain) is intentionally NOT part of this
-panel** — it stays controlled only by the `SPROUT_BASE` environment
-variable, set at deploy time. This is a deliberate choice: if the base
-URL were editable through this same unauthenticated panel, anyone could
-point it at a server they control, and a real secret typed in later
-would then be sent straight to that attacker's server instead of
-Sprout's. Keeping it environment-only closes that specific hole.
+**`SPROUT_BASE` (the API's domain) is never part of this panel, in
+either option** — it stays controlled only by the `SPROUT_BASE`
+environment variable, set at deploy time. This is a deliberate choice: if
+the base URL were editable through this same panel, anyone could point
+it at a server they control, and a real secret typed in later would then
+be sent straight to that attacker's server instead of Sprout's. Keeping
+it environment-only closes that specific hole.
 
 **⚠️ Sandbox and production aren't just different domains — they use
 different API path structures and a different auth request format

@@ -35,6 +35,16 @@ const CONFIG_PATH = path.join(DATA_DIR, 'sprout-config.json');
 
 const EDITABLE_FIELDS = ['SPROUT_CLIENT_ID', 'SPROUT_CLIENT_SECRET', 'SPROUT_SUBSCRIPTION_KEY', 'SPROUT_USER_ID'];
 
+// Captured at module load time — BEFORE initFromDisk() below has a chance
+// to copy any saved-file values into process.env. This is what lets us
+// tell "credentials were baked in at deployment (real env vars)" apart
+// from "credentials were entered later through the settings screen".
+// When every field is already present here, this app was deployed for
+// one specific client with credentials fixed at deploy time (per client
+// request) — the settings screen becomes read-only and the person using
+// the dashboard never needs to see or touch any of this.
+const DEPLOYMENT_LOCKED = EDITABLE_FIELDS.every((key) => !!process.env[key]);
+
 function loadConfig() {
   try {
     if (!fs.existsSync(CONFIG_PATH)) return null;
@@ -60,7 +70,13 @@ function applyConfigToEnv(config) {
 // the server starts. If nothing was ever saved, this does nothing, and
 // the app falls back to whatever's in the environment/.env file (useful
 // for first boot, before anyone has used the settings screen yet).
+// Skipped entirely when deployment-locked, since real env vars already
+// take precedence and there's no saved-file editing to layer on top of.
 function initFromDisk() {
+  if (DEPLOYMENT_LOCKED) {
+    console.log('Sprout credentials are deployment-locked (set via environment variables) — settings screen is read-only.');
+    return;
+  }
   const saved = loadConfig();
   if (saved) {
     applyConfigToEnv(saved);
@@ -69,6 +85,9 @@ function initFromDisk() {
 }
 
 function saveConfig(newValues) {
+  if (DEPLOYMENT_LOCKED) {
+    throw new Error('Credentials are set at deployment time for this installation and cannot be changed here.');
+  }
   const current = loadConfig() || {};
   const merged = { ...current };
 
@@ -104,7 +123,7 @@ function getStatus() {
       status[key] = { set: true, preview };
     }
   });
-  return status;
+  return { fields: status, locked: DEPLOYMENT_LOCKED };
 }
 
-module.exports = { initFromDisk, saveConfig, getStatus, EDITABLE_FIELDS };
+module.exports = { initFromDisk, saveConfig, getStatus, EDITABLE_FIELDS, DEPLOYMENT_LOCKED };

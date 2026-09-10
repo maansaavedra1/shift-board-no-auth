@@ -760,11 +760,11 @@
     document.getElementById('sproutSettingsError').style.display = 'none';
   }
 
-  function renderSproutStatus(status) {
+  function renderSproutStatus(fields) {
     var el = document.getElementById('sproutSettingsStatus');
     var parts = [];
     ['SPROUT_CLIENT_ID', 'SPROUT_CLIENT_SECRET', 'SPROUT_SUBSCRIPTION_KEY', 'SPROUT_USER_ID'].forEach(function (key) {
-      var s = status[key] || { set: false };
+      var s = fields[key] || { set: false };
       var label = key.replace('SPROUT_', '').replace(/_/g, ' ');
       if (!s.set) {
         parts.push(label + ': not set');
@@ -783,10 +783,24 @@
       return res.json();
     }).then(function (data) {
       if (!data.ok) throw new Error(data.error || 'Could not load settings status.');
-      renderSproutStatus(data.status);
+      renderSproutStatus(data.status.fields);
     }).catch(function (err) {
       document.getElementById('sproutSettingsStatus').textContent = 'Could not load status: ' + err.message;
     });
+  }
+
+  // Checked once on page load — if credentials were baked in at deployment
+  // time (this app built for one specific client), the person using the
+  // dashboard never needs to see a Credentials option at all. Hides the
+  // link entirely rather than just disabling the save button, so there's
+  // nothing confusing left to click.
+  function applyCredentialsLockState() {
+    fetch('/api/settings').then(function (res) { return res.json(); }).then(function (data) {
+      if (data.ok && data.status && data.status.locked) {
+        var link = document.getElementById('sproutSettingsLink');
+        if (link) link.style.display = 'none';
+      }
+    }).catch(function () { /* non-fatal — link just stays visible if this check fails */ });
   }
 
   document.getElementById('saveSproutSettingsBtn').addEventListener('click', function () {
@@ -826,7 +840,7 @@
       document.getElementById('settingClientSecret').value = '';
       document.getElementById('settingSubscriptionKey').value = '';
       document.getElementById('settingUserId').value = '';
-      renderSproutStatus(result.body.status);
+      renderSproutStatus(result.body.status.fields);
     }).catch(function (err) {
       sproutSettingsError('Could not save settings: ' + err.message);
     }).finally(function () {
@@ -1370,6 +1384,8 @@
   } else {
     showSetup(true);
   }
+
+  applyCredentialsLockState();
 
   // Scroll-to-top button — appears once scrolled down a bit, hidden near the top.
   var scrollTopBtn = document.getElementById('scrollTopBtn');

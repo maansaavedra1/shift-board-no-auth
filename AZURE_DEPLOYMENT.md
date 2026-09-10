@@ -109,11 +109,26 @@ az containerapp create \
 ```
 
 **Notice there are no `SPROUT_*` environment variables here at all** —
-that's intentional. This version's whole point is that credentials get
-entered through the dashboard's "Sprout settings" panel after it's live,
-not baked into the deployment. (You *can* still pass `SPROUT_*` env vars
-here if you want to bootstrap it with something on first boot — see
-`.env.example` — but it's optional.)
+that's intentional — but as of this update, it's now a **choice**, not
+the only option. See below.
+
+**Recommended for this deployment — bake in the Sprout credentials here,
+since this build is for one specific client.** Add all four alongside
+`SPROUT_BASE` in the same `--env-vars` flag:
+```
+--env-vars SPROUT_BASE=<real production URL> SPROUT_CLIENT_ID=<...> SPROUT_CLIENT_SECRET=<...> SPROUT_SUBSCRIPTION_KEY=<...> SPROUT_USER_ID=<...>
+```
+When all four are set this way, the app detects it at startup and
+**automatically hides the Credentials panel from the dashboard entirely**
+— the person using it never sees a settings screen, never has to enter
+anything, and can't accidentally (or otherwise) overwrite these values
+later, since the save endpoint itself refuses changes once locked. This
+is the safer default for a single-client build like this one.
+
+If you only set some of the four (or none), the dashboard falls back to
+its original behavior — the Credentials panel stays visible and editable
+after deployment, same as before. This is only worth doing if you
+genuinely expect these values to need changing without a redeploy.
 
 **⚠️ CRITICAL — `SPROUT_BASE` defaults to the SANDBOX environment
 (`gateway-sb.sprout.ph`) if not explicitly set.** This is the one thing
@@ -124,11 +139,10 @@ production attendance. No crash, no red banner, nothing that flags it.
 
 For a real production deployment, explicitly add the real production
 `SPROUT_BASE` value as an environment variable in this `az containerapp
-create` command (add `--env-vars SPROUT_BASE=<real production URL>`).
-This value is intentionally NOT editable from the dashboard's Credentials
-panel — see `README.md`'s "Setting Sprout credentials" section for why —
-so it can only be set here, at deployment time, by whoever's running
-this command.
+create` command. This value is intentionally NOT editable from the
+dashboard's Credentials panel even when that panel is visible — see
+`README.md`'s "Setting Sprout credentials" section for why — so it can
+only be set here, at deployment time, by whoever's running this command.
 
 **`--min-replicas 0` — cost-saving setting.** This lets the container
 scale down to zero (and stop being billed) when nobody's using it, and
