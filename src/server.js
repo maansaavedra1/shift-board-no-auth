@@ -1,7 +1,7 @@
 const path = require('path');
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, startLeavesScan, getLeavesScanStatus, findEmployeesWithTodayAdjustments, getRawScheduleForEmployee } = require('./sprout');
+const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, getRawScheduleForEmployee, findEmployeeByName } = require('./sprout');
 const configStore = require('./config-store');
 const authStore = require('./auth-store');
 
@@ -191,106 +191,21 @@ app.post('/api/settings', (req, res) => {
   }
 });
 
-// Diagnostic endpoint: shows the raw structure of one real employee
-// record, so the correct field names for Department/Supervisor can be
-// confirmed against actual Sprout data instead of guessed. This has come
-// up before — "reportsTo" was a guess that was never verified. Once the
-// real field names are confirmed and sprout.js is updated to use them,
-// this endpoint can be removed — it's a one-time diagnostic tool, not
-// part of the normal report flow.
-app.get('/api/debug/employee-sample', async (req, res) => {
-  try {
-    const employees = await getEmployees();
-    if (employees.length === 0) {
-      return res.json({ ok: true, note: 'No employees returned from Sprout.', sample: null });
-    }
-    return res.json({ ok: true, sample: employees[0] });
-  } catch (err) {
-    console.error('Employee sample fetch failed:', err.message);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// One-time diagnostic: finds an employee's raw record (including their
-// full weekly schedule) by name, for investigating a specific person's
-// classification directly — e.g. an oddly large "late minutes" value
-// possibly caused by an overnight shift crossing a calendar-day boundary.
-// Query with ?name=<substring>, case-insensitive, matches first/last name.
+// The report endpoint — now requires a logged-in session (see the
+// requireSession middleware registered above).
+// One-time diagnostic: finds an employee's raw record by name — for
+// looking up a System ID quickly when investigating someone's
+// classification. Query with ?name=<substring>, case-insensitive.
 app.get('/api/debug/employee-lookup', async (req, res) => {
   try {
-    const nameQuery = (req.query.name || '').toLowerCase();
+    const nameQuery = req.query.name || '';
     if (!nameQuery) {
       return res.status(400).json({ ok: false, error: 'Provide ?name=<substring> to search for.' });
     }
-    const employees = await getEmployees();
-    const matches = employees.filter((emp) => {
-      const basic = emp.basicInformation || {};
-      const fullName = `${basic.firstName || ''} ${basic.lastName || ''}`.toLowerCase();
-      return fullName.includes(nameQuery);
-    });
+    const matches = await findEmployeeByName(nameQuery);
     return res.json({ ok: true, matchCount: matches.length, matches });
   } catch (err) {
     console.error('Employee lookup failed:', err.message);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// Diagnostic: shows every distinct employment status value actually in
-// use across the real employee list, with a count for each — needed to
-// confirm the exact strings Sprout uses (e.g. "Resigned" vs "resigned")
-// before filtering inactive employees out of the dashboard. One-time
-// tool, same as employee-sample above — remove once that filter is
-// confirmed working correctly against real data.
-app.get('/api/debug/employment-statuses', async (req, res) => {
-  try {
-    const employees = await getEmployees();
-    const counts = {};
-    employees.forEach((emp) => {
-      const work = emp.workInformation || {};
-      const key = JSON.stringify({
-        employmentStatusId: work.employmentStatusId,
-        employmentStatus: work.employmentStatus,
-        employmentStatusLabel: work.employmentStatusLabel
-      });
-      counts[key] = (counts[key] || 0) + 1;
-    });
-    const breakdown = Object.keys(counts).map((key) => ({ ...JSON.parse(key), count: counts[key] }));
-    breakdown.sort((a, b) => b.count - a.count);
-    return res.json({ ok: true, totalEmployees: employees.length, statusBreakdown: breakdown });
-  } catch (err) {
-    console.error('Employment status breakdown failed:', err.message);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// One-time diagnostic: scans every active employee's Schedules data for
-// a real, non-empty "leaves" entry — see the leaves-scan section in
-// sprout.js for the full reasoning. Runs as a background job (POST to
-// start it, GET to poll progress) rather than one long blocking request
-// — a full scan takes several minutes, longer than most reverse proxies
-// (including Codespaces' own port forwarding) will hold a request open.
-app.get('/api/debug/leaves-scan/start', (req, res) => {
-  const past = parseInt(req.query.past, 10) || 14;
-  const future = parseInt(req.query.future, 10) || 14;
-  startLeavesScan(past, future).catch((err) => console.error('Leaves scan failed:', err.message));
-  res.json({ ok: true, status: getLeavesScanStatus() });
-});
-
-app.get('/api/debug/leaves-scan/status', (req, res) => {
-  res.json({ ok: true, status: getLeavesScanStatus() });
-});
-
-// One-time diagnostic: shows everyone with a real schedule adjustment
-// today, and which category they actually landed in — for finding a
-// real candidate to verify the shift-boundary parsing fix against (see
-// README's "A real bug this surfaced" section). Fast — uses only data
-// already cached, no new Sprout calls.
-app.get('/api/debug/today-adjustments', async (req, res) => {
-  try {
-    const result = await findEmployeesWithTodayAdjustments();
-    return res.json({ ok: true, ...result });
-  } catch (err) {
-    console.error('Today-adjustments check failed:', err.message);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -316,8 +231,6 @@ app.get('/api/debug/raw-schedule', async (req, res) => {
   }
 });
 
-// The report endpoint — now requires a logged-in session (see the
-// requireSession middleware registered above).
 app.get('/api/shift-board', async (req, res) => {
   const requestedDays = parseInt(req.query.days, 10);
   const fromDate = req.query.from;
