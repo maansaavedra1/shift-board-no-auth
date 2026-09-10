@@ -856,4 +856,30 @@ async function findEmployeesWithTodayAdjustments() {
   return { todayKey, count: results.length, results };
 }
 
-module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, startLeavesScan, getLeavesScanStatus, findEmployeesWithTodayAdjustments };
+// One-time diagnostic: fetches ONE employee's raw Schedules data live,
+// bypassing the cache entirely, for comparing against what is (or isn't)
+// actually cached for them — used to isolate whether a missing cache
+// entry is a live-data issue or a caching-logic issue specifically.
+async function getRawScheduleForEmployee(employeeId, windowDaysPast, windowDaysFuture) {
+  const now = new Date();
+  const rangeStart = new Date(now.getTime() - windowDaysPast * 24 * 60 * 60 * 1000);
+  const rangeEnd = new Date(now.getTime() + windowDaysFuture * 24 * 60 * 60 * 1000);
+  const dateFromISO = `${formatDateKey(rangeStart)}T00:00:00`;
+  const dateToISO = `${formatDateKey(rangeEnd)}T23:59:59`;
+
+  const url = buildApiUrl('timeattendance', `/api/v1/Schedules?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&EmployeeId=${encodeURIComponent(employeeId)}&PageNumber=1&RowsPerPage=100`);
+  const response = await fetchWithRetry(url, { headers: await sproutHeaders() });
+  const status = response.status;
+  const body = await response.text();
+  let parsed = null;
+  try { parsed = JSON.parse(body); } catch (e) { /* leave as raw text below if not valid JSON */ }
+
+  return {
+    requestedUrl: url,
+    httpStatus: status,
+    cachedRightNow: getCachedAdjustment(employeeId, formatDateKey(now)),
+    rawResponse: parsed || body
+  };
+}
+
+module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, startLeavesScan, getLeavesScanStatus, findEmployeesWithTodayAdjustments, getRawScheduleForEmployee };

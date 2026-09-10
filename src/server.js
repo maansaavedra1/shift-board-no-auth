@@ -1,7 +1,7 @@
 const path = require('path');
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, startLeavesScan, getLeavesScanStatus, findEmployeesWithTodayAdjustments } = require('./sprout');
+const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, startLeavesScan, getLeavesScanStatus, findEmployeesWithTodayAdjustments, getRawScheduleForEmployee } = require('./sprout');
 const configStore = require('./config-store');
 const authStore = require('./auth-store');
 
@@ -291,6 +291,27 @@ app.get('/api/debug/today-adjustments', async (req, res) => {
     return res.json({ ok: true, ...result });
   } catch (err) {
     console.error('Today-adjustments check failed:', err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// One-time diagnostic: fetches one employee's raw Schedules data live,
+// bypassing the cache entirely, so it can be compared directly against
+// what is (or isn't) actually cached for them right now. Query with
+// ?systemId=<id>, optionally &past=<days>&future=<days> (defaults to
+// 90 each way, matching the real cache window).
+app.get('/api/debug/raw-schedule', async (req, res) => {
+  try {
+    const systemId = parseInt(req.query.systemId, 10);
+    if (!systemId) {
+      return res.status(400).json({ ok: false, error: 'Provide ?systemId=<id>.' });
+    }
+    const past = parseInt(req.query.past, 10) || 90;
+    const future = parseInt(req.query.future, 10) || 90;
+    const result = await getRawScheduleForEmployee(systemId, past, future);
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('Raw schedule fetch failed:', err.message);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
