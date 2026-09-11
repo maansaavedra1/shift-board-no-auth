@@ -1,7 +1,7 @@
 const path = require('path');
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus } = require('./sprout');
+const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, MAX_CUSTOM_RANGE_DAYS } = require('./sprout');
 const configStore = require('./config-store');
 const authStore = require('./auth-store');
 
@@ -49,6 +49,21 @@ function authRateLimiter(req, res, next) {
   next();
 }
 app.use('/api/auth', authRateLimiter);
+
+// The map above gains one entry per unique IP and nothing ever removed
+// an old one — trivial at Firstmac's scale (three admins), but a slow,
+// genuine leak if the ingress is ever scanned or hit by unrelated
+// internet traffic that finds the hostname. Swept on the same interval
+// as the rate limit window itself; an entry whose window has already
+// expired is definitionally stale and safe to drop.
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of authAttempts) {
+    if (now - entry.windowStartedAt > AUTH_RATE_LIMIT_WINDOW_MS) {
+      authAttempts.delete(ip);
+    }
+  }
+}, AUTH_RATE_LIMIT_WINDOW_MS);
 
 // -----------------------------------------------------------------------
 // Login required for everything below except /health and the static
@@ -131,6 +146,18 @@ app.post('/api/auth/register', async (req, res) => {
     // running continuously.
     const trimmedId = String(systemId || '').trim();
     if (!trimmedId || !authStore.getAllowlist().includes(trimmedId)) {
+      return res.status(400).json({ ok: false, error: genericError });
+    }
+    // Checked here too, before the Sprout fetch — an attempt against an
+    // already-claimed ID can never succeed (register() rejects it
+    // internally), but without this check that rejection only happens
+    // *after* a full paginated employee fetch (four live Sprout calls at
+    // ~359 employees) has already run. The allowlist check above closes
+    // most of the original amplification; this closes the specific gap
+    // where a known, already-registered ID still costs a full fetch on
+    // every repeated attempt. Same generic error either way, so this
+    // still reveals nothing about which IDs exist.
+    if (authStore.accountExists(trimmedId)) {
       return res.status(400).json({ ok: false, error: genericError });
     }
     const employees = await getEmployees();
@@ -257,7 +284,13 @@ app.post('/api/settings', (req, res) => {
 // The report endpoint — now requires a logged-in session (see the
 // requireSession middleware registered above).
 app.get('/api/shift-board', async (req, res) => {
-  const requestedDays = parseInt(req.query.days, 10);
+  // Clamped here too, visibly, even though computeReportsForDateRange
+  // already enforces this same bound internally — a reviewer checking
+  // just this line, without tracing into sprout.js, would otherwise
+  // reasonably conclude this was unbounded. Redundant protection is
+  // cheap; a confusing-looking gap that turns out to be safe anyway
+  // still costs someone's time to re-verify.
+  const requestedDays = Math.min(parseInt(req.query.days, 10) || 0, MAX_CUSTOM_RANGE_DAYS);
   const fromDate = req.query.from;
   const toDate = req.query.to;
 

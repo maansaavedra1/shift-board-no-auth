@@ -493,6 +493,87 @@ retries the full 3 attempts, and throws a clear "Request timed out"
 error instead of stalling indefinitely. Confirmed no regression for
 normal, fast-resolving requests.
 
+### `?days=` looked unbounded from one line, even though it wasn't
+
+A separate review, checking `server.js` line by line, correctly flagged
+`const requestedDays = parseInt(req.query.days, 10);` as unclamped and
+concluded the earlier `?days=` fix had been missed. It hadn't — the
+actual clamp lived one level deeper, inside `computeReportsForDateRange`
+in `sprout.js` (shared with the custom-range path, so both enforce the
+same bound from one place rather than duplicating the check). Verified
+end-to-end through the real HTTP route before touching anything:
+`?days=100000` already returned exactly 62 days in 0.037 seconds, not a
+hang. So this was never actually unsafe — but a reviewer reasonably
+concluding otherwise from that one line is a real cost by itself. Added
+an explicit, visible clamp at the entry point too, referencing the same
+exported `MAX_CUSTOM_RANGE_DAYS` constant rather than a duplicated
+magic number — redundant with the existing protection, but the point is
+that the safety should be obvious without needing to trace into another
+file. Re-confirmed the exact same end-to-end request still returns 62
+days.
+
+### Registration still fetched employees for an attempt that could never succeed
+
+The allowlist check (see the security audit fixes above) closed most of
+the original amplification — junk input is rejected before any Sprout
+call now. But an attempt against an ID that's already claimed slipped
+past that check (it *is* allowlisted) and still ran a full paginated
+employee fetch — several real Sprout calls at Firstmac's scale — before
+`register()`'s own "already exists" check finally rejected it, every
+single time. The rate limiter already caps this at 10/IP/minute, so it
+was a leak rather than a hole, but the load lands on Sprout's own rate
+limit, not this app's. Found via a separate implementation hitting the
+identical bug, having inherited the same ordering.
+
+Fixed with one more cheap, local check ahead of the Sprout fetch:
+`accountExists()`, same generic error either way so it still reveals
+nothing about which IDs exist. Confirmed precisely with a real,
+timestamped test: a genuinely new registration still triggers the
+fetch as expected; a second attempt against that same now-claimed ID
+triggers zero additional fetches, rejected immediately instead.
+
+### The holiday type string is a single point of failure — now guarded
+
+Holidays only excuse someone when the type string matches
+`"Non-Working Holiday"` exactly — the right rule, since a Mandatory
+Working Holiday means premium pay but people are still expected in.
+But if Sprout ever returns a type that's neither of the two known
+strings (a new category, a spelling change, different casing), holidays
+would silently stop being recognized with nothing to explain it — the
+whole workforce would go back to reading as Did Not Report on public
+holidays, and it would look exactly like the original bug returning
+with no signal at all. Fixed with the same pattern already used for
+unrecognized `inOutMode` values: a warning logged once per distinct
+unrecognized type (not once per occurrence). Confirmed with a real test:
+an unrecognized type correctly warns and — just as importantly —
+correctly does *not* excuse anyone, a deliberately conservative default
+rather than accidentally excusing something unrecognized. Confirmed two
+employees sharing the same unrecognized type only produce one warning,
+and both previously-recognized types still classify correctly.
+
+### Two smaller cleanup items from the same review
+
+**The rate-limiter map never evicted.** `authAttempts` (added alongside
+the rate limiter above) gained one entry per unique IP and never removed
+any, for the life of the process — trivial at Firstmac's scale (three
+admins), but a genuine slow leak if the ingress is ever scanned by
+unrelated internet traffic. Fixed with a periodic sweep on the same
+interval as the rate-limit window itself, removing any entry whose
+window has already expired. Confirmed directly: a stale (90-second-old)
+entry gets swept, an active (10-second-old) one doesn't.
+
+**A rotated Sprout credential could be silently overridden.** If all
+four `SPROUT_CLIENT_*` values aren't set (so the settings screen isn't
+locked), and someone had previously saved credentials through it, a
+credential later rotated via the Container App's own environment
+variable would get silently overwritten by the stale saved value at
+startup — Azure's own config would correctly show the new value while
+the running process kept using the old one, with nothing to explain
+why. Fixed with a warning logged specifically when a saved value is
+about to override a *different* value already in the environment.
+Confirmed: fires correctly when the saved value differs, stays silent
+when it matches (no false-positive noise on a normal save).
+
 ### Login is required
 
 There's a full System ID + password login system — see the

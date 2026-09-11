@@ -61,6 +61,16 @@ function loadConfig() {
 function applyConfigToEnv(config) {
   EDITABLE_FIELDS.forEach((key) => {
     if (config[key] !== undefined && config[key] !== '') {
+      // Logged specifically when this is about to change an existing,
+      // different env var value — that's the one case worth flagging.
+      // A rotated secret set via the Container App's environment could
+      // otherwise be silently overwritten by a stale value from a prior
+      // settings-screen save, with Azure's own config correctly showing
+      // the new value while the running process quietly keeps using the
+      // old one — nasty to diagnose without this line.
+      if (process.env[key] && process.env[key] !== config[key]) {
+        console.warn(`Saved Sprout setting for ${key} is overriding a different value already in the environment. If you just rotated this credential via an env var, this saved-file value is the one actually taking effect — update it through the settings screen too, or delete the saved config file.`);
+      }
       process.env[key] = config[key];
     }
   });

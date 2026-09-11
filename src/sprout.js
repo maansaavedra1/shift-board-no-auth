@@ -576,6 +576,27 @@ function classifyEmployeeForDay(emp, dayContext) {
   // the holiday's name carried through so the detail can still say which
   // one it was, not just "Rest Day".
   const holidayEntries = getCachedHoliday(systemId, dayContext.dayKey);
+  if (holidayEntries) {
+    holidayEntries.forEach((h) => {
+      // Holidays only excuse someone when the type string matches
+      // exactly — the right rule, since a Mandatory Working Holiday
+      // means premium pay but people are still expected in, and
+      // excusing those would be worse than the bug this whole feature
+      // fixed. But if Sprout ever returns a type that's neither of the
+      // two known strings (a new category, a spelling change, different
+      // casing), holidays would silently stop being recognized and the
+      // original mass-Did-Not-Report bug would return with nothing to
+      // explain why. Warned once per distinct unrecognized value, same
+      // de-duplication pattern as the inOutMode warning above.
+      if (h.type !== 'Non-Working Holiday' && h.type !== 'Mandatory Working Holiday') {
+        const warnKey = `holiday-type:${h.type}`;
+        if (!warnedOnceKeys.has(warnKey)) {
+          warnedOnceKeys.add(warnKey);
+          console.warn(`Unrecognized holiday type ${JSON.stringify(h.type)} — not excusing anyone. Expected "Non-Working Holiday" or "Mandatory Working Holiday".`);
+        }
+      }
+    });
+  }
   const nonWorkingHoliday = holidayEntries && holidayEntries.find((h) => h.type === 'Non-Working Holiday');
   if (nonWorkingHoliday) {
     return { status: 'restDay', entry: { name, ...contactInfo, loginTime, logoutTime, holidayName: nonWorkingHoliday.name } };
@@ -733,7 +754,7 @@ function formatDateKey(date) {
 // day. Matching against the shift's actual time window (computed per
 // employee, per day) instead of a fixed calendar-day bucket fixes both
 // at once — see classifyEmployeeForDay's in/out matching below.
-const warnedUnrecognizedModes = new Set(); // tracked at module scope so the warning below fires once per distinct value per process, not once per log line
+const warnedOnceKeys = new Set(); // shared across every "warn once per distinct value" case in this file (unrecognized inOutMode, unrecognized holiday type) - tracked at module scope so each fires once per distinct value per process, not once per occurrence
 
 function buildLogsByBioId(allLogs) {
   const logsByBioId = {};
@@ -759,8 +780,8 @@ function buildLogsByBioId(allLogs) {
       // unrecognized value per process (not once per log line) so a
       // genuine format change is impossible to miss without flooding
       // the console on every single request.
-      if (!warnedUnrecognizedModes.has(modeStr)) {
-        warnedUnrecognizedModes.add(modeStr);
+      if (!warnedOnceKeys.has(modeStr)) {
+        warnedOnceKeys.add(modeStr);
         console.warn(`Unrecognized attendance log inOutMode "${log.inOutMode}" — this log is being dropped. Expected "in"/"out"/"0"/"1".`);
       }
       return;
@@ -1006,4 +1027,4 @@ async function computeReportsForCustomRange(fromDateStr, toDateStr) {
   return computeReportsBetweenDates(rangeStart, rangeEnd);
 }
 
-module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus };
+module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, MAX_CUSTOM_RANGE_DAYS };
