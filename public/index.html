@@ -589,7 +589,7 @@
     <div id="resetAdminError" class="banner error" style="display:none;"></div>
     <div id="resetAdminSuccess" class="banner info" style="display:none;"></div>
 
-    <input type="text" id="resetAdminSystemId" placeholder="Their System ID">
+    <input type="text" id="resetAdminSystemId" placeholder="Their System ID" inputmode="numeric" pattern="[0-9]*">
     <button id="resetAdminBtn">Reset This Account</button>
 
     <div style="font-size: 11px; opacity: 0.6; margin-top: 14px; line-height: 1.5;">
@@ -1691,6 +1691,14 @@
   document.getElementById('resetAdminLink').addEventListener('click', function () {
     resetAdminOpen = !resetAdminOpen;
     document.getElementById('resetAdminPanel').style.display = resetAdminOpen ? 'block' : 'none';
+  });
+
+  // System IDs are always numeric — strips anything else as it's typed,
+  // rather than just hinting at it via placeholder/pattern (which don't
+  // actually block invalid characters from being entered).
+  document.getElementById('resetAdminSystemId').addEventListener('input', function (e) {
+    var digitsOnly = e.target.value.replace(/[^0-9]/g, '');
+    if (digitsOnly !== e.target.value) e.target.value = digitsOnly;
   });
 
   document.getElementById('resetAdminBtn').addEventListener('click', function () {
