@@ -478,19 +478,44 @@ function classifyEmployeeForDay(emp, dayContext) {
   const adjustment = getCachedAdjustment(systemId, dayContext.dayKey);
   const isRestDay = adjustment
     ? !!adjustment.isRestDay
-    : schedule[`${dayContext.weekday}IsRestday`];
+    : !!schedule[`${dayContext.weekday}IsRestday`];
 
-  // Log presence is now computed BEFORE the Rest Day / On Leave early
-  // returns (previously computed only further down, meaning those two
-  // categories never showed any log info at all). This lets Rest Day and
-  // On Leave still show the actual check-in/check-out time, if any —
-  // real scenarios include an employee working part of a shift before an
-  // emergency came up and they filed leave for the rest of the day, so
-  // this is genuine attendance data worth seeing, not just an anomaly
-  // flag. Sent as ISO strings so the frontend can format them in the
-  // viewer's local time.
-  const inTime = dayContext.firstInByBioId[bioId];
-  const outTime = dayContext.lastOutByBioId[bioId];
+  // Shift boundaries computed up front now (previously computed further
+  // down, after log-matching) — the in/out matching below needs to know
+  // the shift's actual start/end window to search against, rather than
+  // just grabbing whatever fell in today's calendar-day bucket. Also
+  // computes yesterday's boundaries for this same employee, purely to
+  // check whether an overnight shift from yesterday tails into today —
+  // see findShiftLogTimes for why that matters.
+  const todayBoundaries = getShiftBoundariesForDay(systemId, dayContext.dayKey, schedule);
+  const yesterdayKey = formatDateKey(new Date(new Date(`${dayContext.dayKey}T12:00:00Z`).getTime() - 24 * 60 * 60 * 1000));
+  const yesterdayBoundaries = getShiftBoundariesForDay(systemId, yesterdayKey, schedule);
+  const yesterdayWasOvernightIntoToday = !!(yesterdayBoundaries && yesterdayBoundaries.end && formatDateKey(yesterdayBoundaries.end) === dayContext.dayKey);
+
+  const employeeLogs = (dayContext.logsByBioId && dayContext.logsByBioId[bioId]) || [];
+  // On a genuine rest day there's no shift window to search against —
+  // fall back to a plain same-calendar-day match, same as the original
+  // behavior, just so a rest-day worker's logs still show if present.
+  const { inTime, outTime } = (todayBoundaries && !isRestDay)
+    ? findShiftLogTimes(employeeLogs, todayBoundaries.start, todayBoundaries.end, yesterdayWasOvernightIntoToday ? yesterdayBoundaries.end : null)
+    : (() => {
+        let firstIn = null;
+        let lastOut = null;
+        employeeLogs.forEach((log) => {
+          if (formatDateKey(log.time) !== dayContext.dayKey) return;
+          if (log.isIn && (!firstIn || log.time < firstIn)) firstIn = log.time;
+          if (log.isOut && (!lastOut || log.time > lastOut)) lastOut = log.time;
+        });
+        return { inTime: firstIn, outTime: lastOut };
+      })();
+
+  // Log presence is computed BEFORE the Rest Day / On Leave early
+  // returns, so those two categories still show the actual check-in/
+  // check-out time, if any — real scenarios include an employee working
+  // part of a shift before an emergency came up and they filed leave for
+  // the rest of the day, so this is genuine attendance data worth
+  // seeing, not just an anomaly flag. Sent as ISO strings so the
+  // frontend can format them in the viewer's local time.
   const loginTime = inTime ? inTime.toISOString() : null;
   const logoutTime = outTime ? outTime.toISOString() : null;
 
@@ -520,9 +545,6 @@ function classifyEmployeeForDay(emp, dayContext) {
     };
   }
 
-  const shiftFromStr = (adjustment && adjustment.shiftFrom) || schedule[`${dayContext.weekday}From`];
-  const shiftToStr = (adjustment && adjustment.shiftTo) || schedule[`${dayContext.weekday}To`];
-
   // Adjustment values from Sprout are already full datetimes (confirmed
   // against real production data — e.g. "2026-09-10T21:00:00"), while the
   // default weekly schedule only ever gives a bare "HH:MM" time that still
@@ -533,13 +555,11 @@ function classifyEmployeeForDay(emp, dayContext) {
   // shift to 9 PM showed as 893 minutes late — compared against their
   // unadjusted 6 AM default instead, since the malformed date meant the
   // adjustment branch never actually took effect for the "is inTime
-  // valid" checks it's used in elsewhere).
-  function resolveShiftBoundary(rawValue, isFromAdjustment) {
-    if (!rawValue) return null;
-    return isFromAdjustment ? parseManilaDateTime(rawValue) : manilaTimeOnDay(dayContext.dayKey, rawValue);
-  }
-  const shiftStartBoundary = resolveShiftBoundary(shiftFromStr, !!(adjustment && adjustment.shiftFrom));
-  const shiftEndBoundary = resolveShiftBoundary(shiftToStr, !!(adjustment && adjustment.shiftTo));
+  // valid" checks it's used in elsewhere). getShiftBoundariesForDay
+  // (used above for the log-matching window) already handles this
+  // correctly, so these are just reused here for the lateness math below.
+  const shiftStartBoundary = todayBoundaries ? todayBoundaries.start : null;
+  const shiftEndBoundary = todayBoundaries ? todayBoundaries.end : null;
 
   if (!inTime) {
     if (outTime) {
@@ -637,37 +657,121 @@ function formatDateKey(date) {
   return `${y}-${mo}-${d}`;
 }
 
-function buildDayAttendanceIndex(allLogs, dayKey) {
-  // First clock-in, LAST clock-out — someone with multiple taps in a day
-  // (e.g. a lunch-break out/in) should still show their real end-of-day
-  // time, not an early break checkout.
-  const firstInByBioId = {};
-  const lastOutByBioId = {};
+// Groups ALL attendance logs by employee (bioId), sorted chronologically
+// — replaces the old per-calendar-day bucketing. Needed because a single
+// overnight shift's check-in and check-out land on two different
+// calendar days (e.g. clock in 9 PM Thursday, clock out 9 AM Friday) —
+// bucketing strictly by the log's own calendar day was splitting one
+// shift's data across two days, and worse, letting the tail-end checkout
+// get misread as an unrelated "missing log-in" problem on the second
+// day. Matching against the shift's actual time window (computed per
+// employee, per day) instead of a fixed calendar-day bucket fixes both
+// at once — see classifyEmployeeForDay's in/out matching below.
+function buildLogsByBioId(allLogs) {
+  const logsByBioId = {};
   allLogs.forEach((log) => {
-    const logDateKey = formatDateKey(parseManilaDateTime(log.logTime));
-    if (logDateKey !== dayKey) return;
     const bioId = log.bioEmpID;
     const logTime = parseManilaDateTime(log.logTime);
+    if (!logTime || isNaN(logTime.getTime())) return;
     const modeStr = String(log.inOutMode).toLowerCase();
     const isIn = modeStr === 'in' || modeStr === '0';
     const isOut = modeStr === 'out' || modeStr === '1';
-    if (isIn && (!firstInByBioId[bioId] || logTime < firstInByBioId[bioId])) firstInByBioId[bioId] = logTime;
-    if (isOut && (!lastOutByBioId[bioId] || logTime > lastOutByBioId[bioId])) lastOutByBioId[bioId] = logTime;
+    if (!isIn && !isOut) return;
+    if (!logsByBioId[bioId]) logsByBioId[bioId] = [];
+    logsByBioId[bioId].push({ time: logTime, isIn, isOut });
   });
-  return { firstInByBioId, lastOutByBioId };
+  Object.keys(logsByBioId).forEach((bioId) => {
+    logsByBioId[bioId].sort((a, b) => a.time - b.time);
+  });
+  return logsByBioId;
+}
+
+// Computes an employee's shift start/end boundaries for an ARBITRARY day
+// — not just the day currently being classified. Needed to check
+// yesterday's shift (from today's perspective) without re-deriving all
+// of classifyEmployeeForDay's logic. Returns null if that day is a rest
+// day (no shift at all to speak of).
+function getShiftBoundariesForDay(systemId, someDayKey, schedule) {
+  const someWeekday = weekdayForDayKey(someDayKey);
+  const adjustment = getCachedAdjustment(systemId, someDayKey);
+  const isRest = adjustment ? !!adjustment.isRestDay : !!schedule[`${someWeekday}IsRestday`];
+  if (isRest) return null;
+
+  const fromStr = (adjustment && adjustment.shiftFrom) || schedule[`${someWeekday}From`];
+  const toStr = (adjustment && adjustment.shiftTo) || schedule[`${someWeekday}To`];
+  const fromIsAdjustment = !!(adjustment && adjustment.shiftFrom);
+  const toIsAdjustment = !!(adjustment && adjustment.shiftTo);
+
+  const start = fromStr ? (fromIsAdjustment ? parseManilaDateTime(fromStr) : manilaTimeOnDay(someDayKey, fromStr)) : null;
+  const end = toStr ? (toIsAdjustment ? parseManilaDateTime(toStr) : manilaTimeOnDay(someDayKey, toStr)) : null;
+  return { start, end };
+}
+
+// Finds the real check-in/check-out for a specific shift, searching an
+// employee's own chronological log list directly rather than a
+// calendar-day bucket — this is what actually lets an overnight shift's
+// post-midnight checkout be recognized as belonging to the shift it
+// started with, instead of looking like unrelated data on the next day.
+//
+// previousDayEnd (if the employee had a shift the day before that was
+// itself overnight and ends today) is used to exclude a checkout that
+// actually belongs to THAT earlier shift — otherwise it could get
+// double-counted as this shift's own checkout too.
+function findShiftLogTimes(employeeLogs, shiftStart, shiftEnd, previousDayEnd) {
+  if (!employeeLogs || employeeLogs.length === 0) return { inTime: null, outTime: null };
+
+  // Search window: from a bit before shift start (covers someone
+  // clocking in early) to a generous margin after shift end (covers an
+  // overnight shift's checkout the next morning, or someone staying
+  // late). 4 hours each direction comfortably covers real early-arrival
+  // and late-checkout cases without reaching into a genuinely separate
+  // later shift.
+  const GRACE_MS = 4 * 60 * 60 * 1000;
+  const windowStart = shiftStart ? new Date(shiftStart.getTime() - GRACE_MS) : null;
+  const windowEnd = shiftEnd ? new Date(shiftEnd.getTime() + GRACE_MS) : null;
+
+  let inTime = null;
+  let outTime = null;
+
+  employeeLogs.forEach((log) => {
+    if (windowStart && log.time < windowStart) return;
+    if (windowEnd && log.time > windowEnd) return;
+
+    // A checkout that lines up with YESTERDAY's overnight shift ending
+    // today belongs to that earlier shift, not this one — exclude it
+    // from this shift's own matching so it isn't misread as "this
+    // shift's checkout" or, worse, as a sign this shift itself is broken.
+    if (previousDayEnd && log.isOut) {
+      const previousGraceEnd = new Date(previousDayEnd.getTime() + GRACE_MS);
+      if (log.time <= previousGraceEnd) return;
+    }
+
+    if (log.isIn && (!inTime || log.time < inTime)) inTime = log.time;
+    if (log.isOut && (!outTime || log.time > outTime)) outTime = log.time;
+  });
+
+  return { inTime, outTime };
 }
 
 async function computeTodayReport() {
   const now = new Date();
   const todayKey = formatDateKey(now);
-  const dateFromISO = `${todayKey}T00:00:00`;
-  const dateToISO = `${todayKey}T23:59:59`;
   const todayWeekday = weekdayForDayKey(todayKey);
+
+  // Attendance logs are fetched one calendar day wider on each side than
+  // strictly needed — an overnight shift's checkout can land on the next
+  // calendar day (or, less commonly, a very early check-in could sit just
+  // before midnight the day before) — without this wider fetch, the log
+  // that actually belongs to today's shift might not even be in the
+  // dataset being searched. See findShiftLogTimes for how these get
+  // matched to the right shift once fetched.
+  const logsFromISO = `${formatDateKey(new Date(now.getTime() - 24 * 60 * 60 * 1000))}T00:00:00`;
+  const logsToISO = `${formatDateKey(new Date(now.getTime() + 24 * 60 * 60 * 1000))}T23:59:59`;
 
   const headers = await sproutHeaders();
 
   const employeesUrl = buildApiUrl('empservice', '/api/v1/Employees?Include=WorkSchedule&Include=WorkInformation&RowsPerPage=100&PageNumber=1');
-  const attendanceUrl = buildApiUrl('timeattendance', `/api/v1/AttendanceLogs?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&RowsPerPage=100&PageNumber=1`);
+  const attendanceUrl = buildApiUrl('timeattendance', `/api/v1/AttendanceLogs?DateFrom=${encodeURIComponent(logsFromISO)}&DateTo=${encodeURIComponent(logsToISO)}&RowsPerPage=100&PageNumber=1`);
 
   const [empResp, attResp] = await Promise.allSettled([
     fetchWithRetry(employeesUrl, { headers }),
@@ -675,15 +779,14 @@ async function computeTodayReport() {
   ]);
 
   const employees = await getEmployees(empResp.status === 'fulfilled' ? empResp.value : undefined);
-  const logs = await getAttendanceLogs(dateFromISO, dateToISO, attResp.status === 'fulfilled' ? attResp.value : undefined);
+  const logs = await getAttendanceLogs(logsFromISO, logsToISO, attResp.status === 'fulfilled' ? attResp.value : undefined);
 
-  const attendanceIndex = buildDayAttendanceIndex(logs, todayKey);
+  const logsByBioId = buildLogsByBioId(logs);
   const dayContext = {
     weekday: todayWeekday,
     dayDate: now,
     dayKey: todayKey,
-    firstInByBioId: attendanceIndex.firstInByBioId,
-    lastOutByBioId: attendanceIndex.lastOutByBioId
+    logsByBioId
     // Schedule adjustments AND leave status are both read directly from
     // the background cache inside classifyEmployeeForDay (see
     // getCachedAdjustment / getCachedLeave) — not fetched live here.
@@ -711,25 +814,30 @@ async function computeReportsBetweenDates(rangeStart, rangeEnd) {
     dayDates.push(new Date(d));
   }
 
-  const dateFromISO = `${formatDateKey(rangeStart)}T00:00:00`;
-  const dateToISO = `${formatDateKey(rangeEnd)}T23:59:59`;
+  // Fetched one calendar day wider on each side than the requested range
+  // — same reasoning as computeTodayReport: an overnight shift starting
+  // on the last day of the range needs its checkout (which lands on the
+  // day after) to actually be in the dataset being searched, and
+  // similarly for a shift starting the day before the range that tails
+  // into its first day.
+  const logsFromISO = `${formatDateKey(new Date(rangeStart.getTime() - 24 * 60 * 60 * 1000))}T00:00:00`;
+  const logsToISO = `${formatDateKey(new Date(rangeEnd.getTime() + 24 * 60 * 60 * 1000))}T23:59:59`;
 
   const employees = await getEmployees();
-  const logs = await getAttendanceLogs(dateFromISO, dateToISO);
+  const logs = await getAttendanceLogs(logsFromISO, logsToISO);
+  const logsByBioId = buildLogsByBioId(logs);
 
   const cacheStatus = getScheduleAdjustmentCacheStatus();
 
   return dayDates.map((dayDate) => {
     const dayKey = formatDateKey(dayDate);
     const weekday = weekdayForDayKey(dayKey);
-    const attendanceIndex = buildDayAttendanceIndex(logs, dayKey);
 
     const dayContext = {
       weekday,
       dayDate,
       dayKey,
-      firstInByBioId: attendanceIndex.firstInByBioId,
-      lastOutByBioId: attendanceIndex.lastOutByBioId
+      logsByBioId
       // Schedule adjustments AND leave status are both read directly from
       // the background cache inside classifyEmployeeForDay (see
       // getCachedAdjustment / getCachedLeave) — not fetched live here.
@@ -778,43 +886,4 @@ async function computeReportsForCustomRange(fromDateStr, toDateStr) {
   return computeReportsBetweenDates(rangeStart, rangeEnd);
 }
 
-// One-time diagnostic: fetches ONE employee's raw Schedules data live,
-// bypassing the cache entirely, for comparing against what is (or isn't)
-// actually cached for them — used to isolate whether a missing cache
-// entry is a live-data issue or a caching-logic issue specifically.
-async function getRawScheduleForEmployee(employeeId, windowDaysPast, windowDaysFuture) {
-  const now = new Date();
-  const rangeStart = new Date(now.getTime() - windowDaysPast * 24 * 60 * 60 * 1000);
-  const rangeEnd = new Date(now.getTime() + windowDaysFuture * 24 * 60 * 60 * 1000);
-  const dateFromISO = `${formatDateKey(rangeStart)}T00:00:00`;
-  const dateToISO = `${formatDateKey(rangeEnd)}T23:59:59`;
-
-  const url = buildApiUrl('timeattendance', `/api/v1/Schedules?DateFrom=${encodeURIComponent(dateFromISO)}&DateTo=${encodeURIComponent(dateToISO)}&EmployeeId=${encodeURIComponent(employeeId)}&PageNumber=1&RowsPerPage=100`);
-  const response = await fetchWithRetry(url, { headers: await sproutHeaders() });
-  const status = response.status;
-  const body = await response.text();
-  let parsed = null;
-  try { parsed = JSON.parse(body); } catch (e) { /* leave as raw text below if not valid JSON */ }
-
-  return {
-    requestedUrl: url,
-    httpStatus: status,
-    cachedAdjustmentRightNow: getCachedAdjustment(employeeId, formatDateKey(now)),
-    rawResponse: parsed || body
-  };
-}
-
-// One-time diagnostic: finds an employee's raw record (including their
-// full weekly schedule) by name — for looking up a System ID quickly
-// when investigating a specific person's classification.
-async function findEmployeeByName(nameQuery) {
-  const employees = await getEmployees();
-  const query = nameQuery.toLowerCase();
-  return employees.filter((emp) => {
-    const basic = emp.basicInformation || {};
-    const fullName = `${basic.firstName || ''} ${basic.lastName || ''}`.toLowerCase();
-    return fullName.includes(query);
-  });
-}
-
-module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, getRawScheduleForEmployee, findEmployeeByName };
+module.exports = { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus };

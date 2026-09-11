@@ -1,7 +1,7 @@
 const path = require('path');
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus, getRawScheduleForEmployee, findEmployeeByName } = require('./sprout');
+const { computeTodayReport, computeReportsForDateRange, computeReportsForCustomRange, resetTokenCache, getEmployees, refreshScheduleAdjustmentsCache, getScheduleAdjustmentCacheStatus } = require('./sprout');
 const configStore = require('./config-store');
 const authStore = require('./auth-store');
 
@@ -193,44 +193,6 @@ app.post('/api/settings', (req, res) => {
 
 // The report endpoint — now requires a logged-in session (see the
 // requireSession middleware registered above).
-// One-time diagnostic: finds an employee's raw record by name — for
-// looking up a System ID quickly when investigating someone's
-// classification. Query with ?name=<substring>, case-insensitive.
-app.get('/api/debug/employee-lookup', async (req, res) => {
-  try {
-    const nameQuery = req.query.name || '';
-    if (!nameQuery) {
-      return res.status(400).json({ ok: false, error: 'Provide ?name=<substring> to search for.' });
-    }
-    const matches = await findEmployeeByName(nameQuery);
-    return res.json({ ok: true, matchCount: matches.length, matches });
-  } catch (err) {
-    console.error('Employee lookup failed:', err.message);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// One-time diagnostic: fetches one employee's raw Schedules data live,
-// bypassing the cache entirely, so it can be compared directly against
-// what is (or isn't) actually cached for them right now. Query with
-// ?systemId=<id>, optionally &past=<days>&future=<days> (defaults to
-// 90 each way, matching the real cache window).
-app.get('/api/debug/raw-schedule', async (req, res) => {
-  try {
-    const systemId = parseInt(req.query.systemId, 10);
-    if (!systemId) {
-      return res.status(400).json({ ok: false, error: 'Provide ?systemId=<id>.' });
-    }
-    const past = parseInt(req.query.past, 10) || 90;
-    const future = parseInt(req.query.future, 10) || 90;
-    const result = await getRawScheduleForEmployee(systemId, past, future);
-    return res.json({ ok: true, ...result });
-  } catch (err) {
-    console.error('Raw schedule fetch failed:', err.message);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
 app.get('/api/shift-board', async (req, res) => {
   const requestedDays = parseInt(req.query.days, 10);
   const fromDate = req.query.from;

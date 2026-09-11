@@ -246,6 +246,37 @@ a 404 and confirmed it's now logged (previously silent); simulated a
 transient failure on a second cycle and confirmed the employee's correct
 classification survived unchanged rather than reverting to wrong data.
 
+### Graveyard/overnight shifts were getting split across two days
+
+Attendance logs used to be bucketed strictly by the calendar day of
+their own timestamp. For a normal shift that's fine, but an overnight
+shift's checkout lands on the *next* calendar day — e.g. clock in 9 PM
+Thursday, clock out 9 AM Friday. That checkout was landing in Friday's
+bucket, completely disconnected from the Thursday shift it actually
+belonged to — and worse, it would then get picked up on Friday as an
+unexplained "checked out but never checked in" flag, even though nothing
+was actually wrong; Friday's real shift (that night) just hadn't started
+yet.
+
+Fixed by matching logs against the *shift's own time window* (already
+computed per employee, per day) instead of a fixed calendar-day bucket
+— see `findShiftLogTimes`, `getShiftBoundariesForDay`, and
+`buildLogsByBioId` in `sprout.js`. Each day now also checks whether
+*yesterday's* shift for that same employee was itself overnight and
+tails into today, so a checkout that genuinely belongs to yesterday's
+shift doesn't get double-counted or misread as today's problem. The day
+before their next shift actually starts, they're shown in "Late (Shift
+Ongoing)" — the same way any employee is shown before their shift has
+started, not a special case just for this.
+
+Confirmed against a real overnight case (a 9 PM–9 AM shift): the shift's
+own day now correctly shows both the check-in and the next-morning
+check-out together as one complete shift, and the following day no
+longer shows the misleading "missing log-in" flag. Confirmed no
+regression for normal shifts, rest-day-with-real-logs, and Did Not
+Report classification, both in `computeTodayReport` and the multi-day
+range function.
+
 ### Login is required
 
 There's a full System ID + password login system — see the
