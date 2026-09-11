@@ -702,8 +702,20 @@ function getShiftBoundariesForDay(systemId, someDayKey, schedule) {
   const fromIsAdjustment = !!(adjustment && adjustment.shiftFrom);
   const toIsAdjustment = !!(adjustment && adjustment.shiftTo);
 
-  const start = fromStr ? (fromIsAdjustment ? parseManilaDateTime(fromStr) : manilaTimeOnDay(someDayKey, fromStr)) : null;
-  const end = toStr ? (toIsAdjustment ? parseManilaDateTime(toStr) : manilaTimeOnDay(someDayKey, toStr)) : null;
+  // Validated here, at the source, rather than trusting every caller
+  // downstream to separately check — a real, confirmed case: Sprout's
+  // own schedule data sometimes has isRestDay: false for a day whose
+  // time fields are still the literal text "REST DAY" (a genuine data
+  // inconsistency, not something this code controls). Parsing that as a
+  // time produces a technically-truthy-but-invalid Date object, which
+  // then throws "Invalid time value" the moment anything (formatDateKey,
+  // toISOString) tries to actually use it. Returning null here instead
+  // means every caller can safely treat a non-null boundary as
+  // genuinely usable, without needing its own validity check.
+  let start = fromStr ? (fromIsAdjustment ? parseManilaDateTime(fromStr) : manilaTimeOnDay(someDayKey, fromStr)) : null;
+  let end = toStr ? (toIsAdjustment ? parseManilaDateTime(toStr) : manilaTimeOnDay(someDayKey, toStr)) : null;
+  if (start && isNaN(start.getTime())) start = null;
+  if (end && isNaN(end.getTime())) end = null;
   return { start, end };
 }
 

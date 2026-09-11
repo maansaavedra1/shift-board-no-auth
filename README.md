@@ -277,6 +277,29 @@ regression for normal shifts, rest-day-with-real-logs, and Did Not
 Report classification, both in `computeTodayReport` and the multi-day
 range function.
 
+### A crash this same fix introduced, caught and fixed the same day
+
+Real production error: `"The backend reported an error from Sprout:
+Invalid time value"` — a genuine crash, not a Sprout-side issue despite
+the wording. Root cause: `getShiftBoundariesForDay` (added for the fix
+above) parses a schedule's from/to time into a real `Date`, but didn't
+validate the result — and Sprout's own schedule data sometimes has
+`isRestDay: false` for a day whose time fields are still the literal
+text `"REST DAY"` (a genuine data inconsistency on Sprout's end, not
+something this code controls). Parsing that text as a time produces a
+technically-truthy-but-invalid `Date` object, and the *following* day's
+overnight-shift check (`yesterdayWasOvernightIntoToday`) passed that
+straight into `formatDateKey`, which throws exactly `"Invalid time
+value"` the moment it tries to format an invalid date.
+
+Fixed at the source: `getShiftBoundariesForDay` now validates its own
+`start`/`end` before returning them, so every caller downstream can
+trust that a non-null boundary is genuinely usable, without needing its
+own separate validity check. Reproduced the exact crash with this same
+data pattern before fixing, confirmed it no longer throws afterward, and
+re-ran the full graveyard-shift regression suite (Kiev's real overnight
+case, normal shifts, rest-day-with-logs) to confirm nothing else broke.
+
 ### Login is required
 
 There's a full System ID + password login system — see the
