@@ -300,6 +300,199 @@ data pattern before fixing, confirmed it no longer throws afterward, and
 re-ran the full graveyard-shift regression suite (Kiev's real overnight
 case, normal shifts, rest-day-with-logs) to confirm nothing else broke.
 
+### A severe gap the graveyard-shift fix itself had — permanent night shifts
+
+**Found via testing on a separate Apps Script port of this app** — the
+same underlying bug exists here too, and did affect this live
+deployment. The original graveyard-shift fix only actually worked for an
+overnight shift arriving as a **schedule adjustment**, because those
+carry full datetimes that already say which calendar day the shift ends
+on. A **permanent** night shift — someone's regular weekly schedule,
+e.g. `21:00`–`06:00`, with no adjustment involved at all — arrives as
+two bare `"HH:MM"` strings with no date. Both were being anchored to the
+*same* calendar day, putting the end nine hours *before* the start. That
+inverted window meant every real punch fell outside it, misclassifying
+a genuine night-shift worker as **Did Not Report** despite clocking in
+and out completely normally. Every previous test of the graveyard fix
+happened to use an adjustment-based case, so this gap went unnoticed
+until it was found against a different implementation of this same
+logic.
+
+Fixed in `getShiftBoundariesForDay`: after computing the day's start/end,
+if neither came from an adjustment and the end still falls at or before
+the start, push the end forward by 24 hours. Adjustments are
+deliberately excluded — their times are already correct as given.
+Reproduced the exact failure first (a 21:00–06:00 weekly schedule with
+real punches at 21:05 and 06:10, showing Did Not Report with null
+times), confirmed the fix correctly reclassifies it as Present but Late
+with both times shown, confirmed the following day still correctly
+shows Did Not Report before that night's shift starts, and re-ran the
+full regression suite (adjustment-based overnight, normal shifts,
+rest-day-with-logs, the "REST DAY"-text crash fix) with zero
+regressions.
+
+### Public holidays were causing mass false "Did Not Report"
+
+Found via a handover from a separate review pass, and confirmed directly
+in this codebase: `holidays[]` rides along in the same `Schedules`
+response already being fetched for adjustments and leave, but nothing
+here ever actually read it. On any real public holiday, every employee
+whose weekly schedule would normally have them working that weekday was
+being compared against a shift they were never expected to keep that
+day — and correctly not showing up read as **Did Not Report**, for the
+whole ~359-person workforce simultaneously, every single time a holiday
+occurred.
+
+Real Sprout data distinguishes two holiday types, and they need
+different treatment: a **Non-Working Holiday** (e.g. Independence Day)
+is a genuine day off — nobody's expected to work. A **Mandatory Working
+Holiday** (e.g. a local city anniversary) is still a real working day,
+just with premium pay — people who don't show up on one of these are
+still correctly flagged, same as any other day. Confirmed this
+distinction matters with a direct test: a Non-Working Holiday correctly
+excuses someone from Did Not Report; a Mandatory Working Holiday
+correctly does not change their classification at all.
+
+Fixed by caching `holidays[]` alongside adjustments and leave (same
+background sync, no extra Sprout calls), and checking it right after the
+rest-day check in `classifyEmployeeForDay` — reusing the existing Rest
+Day category for now rather than introducing a new one, with the actual
+holiday's name carried through so the detail column can say "Holiday
+(Independence Day)" rather than a generic "On rest day". Confirmed with
+a real browser test end-to-end.
+
+An external audit of this codebase (prompted by the night-shift bug
+above) found several genuine issues, each reproduced against the real
+code before being fixed. In rough order of severity:
+
+**A removed admin kept full access.** `verifyLogin` only checked the
+allowlist at registration, never again — and `requireSession` never
+checked it at all. Taking someone off `ADMIN_ALLOWLIST` and redeploying,
+or using "Reset an admin account", left their *existing* session fully
+valid for up to its full 12-hour lifetime; sessions are stateless, so
+there was nothing else that could revoke them. Fixed: both now recheck
+the allowlist (and, for sessions, that the account still exists) on
+every single request, not just at login. Confirmed: removal from the
+allowlist and an account reset both now invalidate an existing session
+immediately, on the very next request.
+
+**Registration was unauthenticated and revealing.** `/api/auth/register`
+ran a handful of real Sprout API calls *before* validating anything, and
+returned three distinct, verbatim error messages — enough to walk the
+numeric System ID space and find exactly which IDs were
+allowlisted-but-unregistered, each one a free account. Fixed: the
+allowlist is now checked first, before any Sprout call, and every
+failure returns one generic message. A simple rate limiter (10
+requests/minute/IP) was also added across all `/api/auth/*` routes,
+since nothing previously stopped either endpoint from being hit in a
+tight loop.
+
+**Login could block the whole server.** Password verification used
+bcrypt's synchronous compare, which holds Node's single thread for
+~150-300ms with no yielding — a handful of login attempts per second was
+enough to stall every other request, including the health check. Fixed:
+switched to bcrypt's async compare. This also meant `loadAccounts`
+(which can now throw on a corrupt file — see below) needed proper
+try/catch handling added around both the login route and the session
+check, so a read failure can't become an unhandled rejection.
+
+**`?days=` had no upper bound.** The custom date-range picker enforces a
+62-day maximum; the "last N days" preset buttons didn't share it. A
+stray `?days=100000` would build that many day objects and classify
+every employee against every one of them, synchronously — long enough
+to fail the health check and get the container restarted. Fixed: clamped
+to the same 62-day bound. Confirmed: `?days=100000` now returns exactly
+62 days.
+
+**A long leave showed a confidently wrong date range.** The leave-range
+walk was capped at 14 days each direction — past that, it didn't show
+less detail, it showed a *wrong* range with nothing to indicate it was
+incomplete. Philippine maternity leave is 105 days, and the employment
+filter deliberately keeps maternity employees active — every one of them
+would have displayed an incorrect range. Fixed: raised the cap to 120
+days (comfortably covers 105), and anything that still exceeds it now
+shows honestly — e.g. "On leave (Sep 11, 2026 – Jan 10, 2027 or later)"
+— rather than a clean-looking but wrong window. Confirmed with a real
+105-day case (shows the full correct range, no truncation) and a 150-day
+case (correctly marked as truncated on the end that genuinely couldn't
+be walked far enough to resolve).
+
+**A corrupt saved-data file was indistinguishable from an empty one.**
+Both `admin-accounts.json` and `sprout-config.json` caught every read
+error, including malformed JSON, and silently returned as if nothing had
+ever been saved. Combined with non-atomic writes, a crash mid-write
+could produce a corrupt file that then looked exactly like "no accounts
+yet" — and the next registration would write a fresh file containing
+*only* that one new account, permanently losing everyone else who was in
+the unreadable original. Fixed: both files now distinguish a genuinely
+missing file (returns empty, as before) from one that exists but fails
+to parse (throws, so callers can't silently proceed as if nothing was
+lost); both now write via a temp file + atomic rename, so a crash
+mid-write can't produce a half-written file in the first place. The one
+place this *does* run at server startup (`config-store.js`'s
+`initFromDisk`) is wrapped in its own try/catch, so a corrupt file can
+never prevent the whole server from booting — confirmed directly.
+
+**Smaller fixes from the same audit, also confirmed:** logs with no
+`bioEmpID` are now skipped entirely rather than grouped under a shared
+`undefined` bucket (previously, every employee missing a biometric ID
+would have silently inherited each other's attendance); an unrecognized
+`inOutMode` value now logs a warning (once per distinct value, not once
+per log line) instead of silently dropping the punch with nothing to
+explain it; a System ID containing a period is now rejected at
+registration, since it would otherwise break the session token's format
+in a way that's very confusing to debug; and two stale comments
+(`config-store.js` claiming the app has no login at all, and a cookie
+comment implying `req.secure` is read when the value is actually
+hardcoded) were corrected to match reality.
+
+**Flagged but not acted on, since it needs an operational check rather
+than a code change:** whether this deployment actually runs a single
+replica with a persistent volume over `data/`. If it doesn't, saved
+accounts/credentials and session signing keys would be inconsistent
+across replicas — worth confirming directly in Azure rather than
+assuming.
+
+### The cache could go stale silently, and the UI would never say
+
+Found via a separate review pass. `scheduleAdjustmentCacheMessage` used
+to treat "has completed at least once" as permanently healthy — once
+the background sync succeeded a single time, the dashboard would never
+warn about it again, no matter how old the data actually got. A cache
+that last completed at 08:00 would show "Schedule adjustments synced
+08:00:00" at 6pm, in the same muted grey as always. That matters more
+than it sounds: Leave and Schedule Adjustments (and now holidays) all
+quietly read as "none" if the cache stops updating — indistinguishable
+from a genuinely uneventful day. This isn't hypothetical: the Apps
+Script port hit exactly this for hours, and the only thing that caught
+it was someone comparing one employee against what Sprout actually
+showed.
+
+Fixed: compares the last successful refresh against now, and warns past
+2 hours (the cycle takes ~30 minutes at this employee count, so 2 hours
+means cycles have genuinely stopped, not just one running long). The
+toolbar note itself now renders the stale case in bold red rather than
+muted grey — the whole point is that it should stop looking like normal,
+healthy data. Confirmed with direct tests: a fresh cache shows no
+warning, a cache just under the 2-hour threshold shows no warning
+either (no false positives), and a 3-hour-old cache correctly shows both
+the banner and the bold red note.
+
+**Related fix, same underlying risk:** there was no request timeout
+anywhere in this file. Combined with the background refresh's overlap
+guard (`isRefreshing`, which skips a new cycle if one's already running),
+a single genuinely stalled Sprout request could hold that flag true
+indefinitely — every subsequent scheduled refresh would silently skip,
+while the dashboard kept showing its last good timestamp throughout
+(exactly the failure the fix above is designed to eventually catch, but
+better to prevent the freeze in the first place). Fixed: each request
+now aborts after 30 seconds via `AbortController`, surfacing as a normal
+retryable error rather than hanging forever. Confirmed with a genuinely
+hung request (one that never resolves on its own) — correctly aborts,
+retries the full 3 attempts, and throws a clear "Request timed out"
+error instead of stalling indefinitely. Confirmed no regression for
+normal, fast-resolving requests.
+
 ### Login is required
 
 There's a full System ID + password login system — see the

@@ -33,17 +33,31 @@ function resetTokenCache() {
 }
 
 async function fetchWithRetry(url, options, maxAttempts = 3) {
+  // No timeout previously existed anywhere in this file — combined with
+  // the background refresh's overlap guard (isRefreshing), a single
+  // stalled request could hold that flag true indefinitely, silently
+  // skipping every subsequent scheduled refresh while lastRefreshedAt
+  // kept showing its last good value (see the stale-cache warning
+  // above — this is exactly the kind of freeze that would look
+  // perfectly healthy without it). An explicit timeout means a stalled
+  // request surfaces as a normal, retryable error instead of hanging
+  // indefinitely.
+  const REQUEST_TIMEOUT_MS = 30000;
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-      const response = await fetch(url, options);
+      const response = await fetch(url, { ...options, signal: controller.signal });
       if (response.status === 429 || (response.status >= 500 && response.status < 600)) {
         lastError = new Error(`Transient HTTP ${response.status}: ${await response.text()}`);
       } else {
         return response;
       }
     } catch (err) {
-      lastError = err;
+      lastError = (err.name === 'AbortError') ? new Error(`Request timed out after ${REQUEST_TIMEOUT_MS}ms: ${url}`) : err;
+    } finally {
+      clearTimeout(timer);
     }
     if (attempt < maxAttempts) {
       await new Promise((resolve) => setTimeout(resolve, 500 * Math.pow(2, attempt - 1)));
@@ -245,6 +259,7 @@ async function getAttendanceLogs(dateFromISO, dateToISO, preloadedFirstResponse)
 
 const scheduleAdjustmentCache = new Map(); // key: `${employeeId}|${dayKey}` -> { isRestDay, shiftFrom, shiftTo }
 const leaveCache = new Map(); // key: `${employeeId}|${dayKey}` -> array of { type, paid, isWhole, isFirstHalf }
+const holidayCache = new Map(); // key: `${employeeId}|${dayKey}` -> array of { name, type, premium }
 const scheduleAdjustmentCacheState = {
   lastRefreshedAt: null,   // ISO string, or null if a full cycle has never completed yet
   isRefreshing: false,
@@ -261,6 +276,10 @@ function getCachedLeave(employeeId, dayKey) {
   return leaveCache.get(`${employeeId}|${dayKey}`) || null;
 }
 
+function getCachedHoliday(employeeId, dayKey) {
+  return holidayCache.get(`${employeeId}|${dayKey}`) || null;
+}
+
 // Reconstructs an approximate leave date range around a given day, since
 // the Schedules-based leave data (see the cache section below) is
 // inherently per-day, not a single request record with its own
@@ -273,7 +292,14 @@ function getCachedLeave(employeeId, dayKey) {
 // at 14 days each direction as a sane bound; a leave request longer than
 // that would be unusual enough to just show what's directly confirmed.
 function reconstructLeaveRange(employeeId, dayKey, leaveType, schedule) {
-  const MAX_WALK_DAYS = 14;
+  // Philippine maternity leave is 105 days — the employment filter
+  // deliberately keeps maternity employees active, so this isn't a
+  // hypothetical edge case. The previous cap (14) didn't just show less
+  // detail for a leave this long, it showed a confidently WRONG range —
+  // a truncated window with nothing to indicate it wasn't the real one.
+  // Raised generously past any real leave type, with an honest
+  // "hitCap" flag as a second layer for anything longer still.
+  const MAX_WALK_DAYS = 120;
 
   function matchesType(entries) {
     return !!entries && entries.some((l) => l.type === leaveType);
@@ -289,6 +315,7 @@ function reconstructLeaveRange(employeeId, dayKey, leaveType, schedule) {
   }
 
   let startKey = dayKey;
+  let hitStartCap = true;
   for (let i = 1; i <= MAX_WALK_DAYS; i++) {
     const candidate = shiftDayKey(dayKey, -i);
     if (matchesType(getCachedLeave(employeeId, candidate))) {
@@ -296,11 +323,13 @@ function reconstructLeaveRange(employeeId, dayKey, leaveType, schedule) {
     } else if (isScheduledRestDay(candidate)) {
       continue; // tolerated gap — keep walking, but don't move startKey to a non-leave day
     } else {
+      hitStartCap = false;
       break;
     }
   }
 
   let endKey = dayKey;
+  let hitEndCap = true;
   for (let i = 1; i <= MAX_WALK_DAYS; i++) {
     const candidate = shiftDayKey(dayKey, i);
     if (matchesType(getCachedLeave(employeeId, candidate))) {
@@ -308,11 +337,12 @@ function reconstructLeaveRange(employeeId, dayKey, leaveType, schedule) {
     } else if (isScheduledRestDay(candidate)) {
       continue;
     } else {
+      hitEndCap = false;
       break;
     }
   }
 
-  return { startKey, endKey };
+  return { startKey, endKey, hitStartCap, hitEndCap };
 }
 
 function getScheduleAdjustmentCacheStatus() {
@@ -336,6 +366,7 @@ async function fetchAndCacheAdjustmentsForEmployee(employeeId, dateFromISO, date
   const pageSize = 100;
   const newAdjustments = new Map();
   const newLeaves = new Map();
+  const newHolidays = new Map();
   try {
     const headers = await sproutHeaders();
     let pageNumber = 1;
@@ -368,6 +399,9 @@ async function fetchAndCacheAdjustmentsForEmployee(employeeId, dateFromISO, date
         if (day.leaves && day.leaves.length > 0) {
           newLeaves.set(`${employeeId}|${dayKey}`, day.leaves);
         }
+        if (day.holidays && day.holidays.length > 0) {
+          newHolidays.set(`${employeeId}|${dayKey}`, day.holidays);
+        }
       });
 
       // A wide window (see WINDOW_DAYS_PAST/FUTURE below) can span more
@@ -388,8 +422,12 @@ async function fetchAndCacheAdjustmentsForEmployee(employeeId, dateFromISO, date
     for (const key of leaveCache.keys()) {
       if (key.startsWith(`${employeeId}|`)) leaveCache.delete(key);
     }
+    for (const key of holidayCache.keys()) {
+      if (key.startsWith(`${employeeId}|`)) holidayCache.delete(key);
+    }
     newAdjustments.forEach((value, key) => scheduleAdjustmentCache.set(key, value));
     newLeaves.forEach((value, key) => leaveCache.set(key, value));
+    newHolidays.forEach((value, key) => holidayCache.set(key, value));
   } catch (err) {
     // Swallow per-employee errors — logged for visibility, but one bad
     // employee record shouldn't abort caching for everyone else. Their
@@ -523,6 +561,26 @@ function classifyEmployeeForDay(emp, dayContext) {
     return { status: 'restDay', entry: { name, ...contactInfo, loginTime, logoutTime } };
   }
 
+  // Holidays ride along in the same Schedules response already being
+  // fetched for adjustments and leave — but they were never actually
+  // read anywhere in this file. On any real Non-Working Holiday, every
+  // employee whose weekly schedule would normally have them working
+  // that weekday was being compared against a normal shift they were
+  // never expected to keep — and correctly not showing up read as Did
+  // Not Report, for the entire ~359-person workforce simultaneously, on
+  // every single public holiday. A "Mandatory Working Holiday" (real
+  // Sprout data includes both) is a genuinely different thing — pay
+  // premium, but people are still expected to work — so only the
+  // non-working kind changes anything here; treated as a rest day for
+  // now (reusing that existing bucket) rather than a new category, with
+  // the holiday's name carried through so the detail can still say which
+  // one it was, not just "Rest Day".
+  const holidayEntries = getCachedHoliday(systemId, dayContext.dayKey);
+  const nonWorkingHoliday = holidayEntries && holidayEntries.find((h) => h.type === 'Non-Working Holiday');
+  if (nonWorkingHoliday) {
+    return { status: 'restDay', entry: { name, ...contactInfo, loginTime, logoutTime, holidayName: nonWorkingHoliday.name } };
+  }
+
   const leaveEntries = getCachedLeave(systemId, dayContext.dayKey);
   if (leaveEntries && leaveEntries.length > 0) {
     const types = [...new Set(leaveEntries.map((l) => l.type).filter(Boolean))].join(', ');
@@ -540,7 +598,15 @@ function classifyEmployeeForDay(emp, dayContext) {
         leaveType: types || 'Leave',
         leaveIsHalfDay: anyHalfDay,
         leaveFrom: range ? range.startKey : dayContext.dayKey,
-        leaveTo: range ? range.endKey : dayContext.dayKey
+        leaveTo: range ? range.endKey : dayContext.dayKey,
+        // Honest truncation markers — a leave longer than the walk cap
+        // (120 days) shouldn't render as a clean, confident range when
+        // the true start/end might extend further. Real case: Philippine
+        // maternity leave is 105 days, comfortably under the cap now,
+        // but this stays as a second layer of defense for anything
+        // longer or unusual.
+        leaveFromIsApproximate: !!(range && range.hitStartCap),
+        leaveToIsApproximate: !!(range && range.hitEndCap)
       }
     };
   }
@@ -667,16 +733,38 @@ function formatDateKey(date) {
 // day. Matching against the shift's actual time window (computed per
 // employee, per day) instead of a fixed calendar-day bucket fixes both
 // at once — see classifyEmployeeForDay's in/out matching below.
+const warnedUnrecognizedModes = new Set(); // tracked at module scope so the warning below fires once per distinct value per process, not once per log line
+
 function buildLogsByBioId(allLogs) {
   const logsByBioId = {};
   allLogs.forEach((log) => {
     const bioId = log.bioEmpID;
+    // Skipped rather than grouped under an "undefined" bucket — without
+    // this, every employee whose own record is also missing a
+    // biometricId would all read from that same shared bucket, silently
+    // inheriting each other's attendance. Better to show no logs at all
+    // for someone with no biometric ID than to show someone else's.
+    if (bioId === undefined || bioId === null) return;
     const logTime = parseManilaDateTime(log.logTime);
     if (!logTime || isNaN(logTime.getTime())) return;
     const modeStr = String(log.inOutMode).toLowerCase();
     const isIn = modeStr === 'in' || modeStr === '0';
     const isOut = modeStr === 'out' || modeStr === '1';
-    if (!isIn && !isOut) return;
+    if (!isIn && !isOut) {
+      // Only four spellings are recognized, confirmed against real
+      // production data — but if a device or a future Sprout update
+      // ever emits something else, this log is silently dropped with
+      // nothing to explain it, and whole departments could read as
+      // absent despite having real punches. Warned once per distinct
+      // unrecognized value per process (not once per log line) so a
+      // genuine format change is impossible to miss without flooding
+      // the console on every single request.
+      if (!warnedUnrecognizedModes.has(modeStr)) {
+        warnedUnrecognizedModes.add(modeStr);
+        console.warn(`Unrecognized attendance log inOutMode "${log.inOutMode}" — this log is being dropped. Expected "in"/"out"/"0"/"1".`);
+      }
+      return;
+    }
     if (!logsByBioId[bioId]) logsByBioId[bioId] = [];
     logsByBioId[bioId].push({ time: logTime, isIn, isOut });
   });
@@ -716,6 +804,20 @@ function getShiftBoundariesForDay(systemId, someDayKey, schedule) {
   let end = toStr ? (toIsAdjustment ? parseManilaDateTime(toStr) : manilaTimeOnDay(someDayKey, toStr)) : null;
   if (start && isNaN(start.getTime())) start = null;
   if (end && isNaN(end.getTime())) end = null;
+
+  // A permanent (default weekly schedule) overnight shift arrives as two
+  // bare "HH:MM" times with no date of their own — e.g. "21:00" to
+  // "06:00" — so both get anchored to the SAME calendar day above,
+  // putting the end nine hours BEFORE the start. That inverted window
+  // then makes every real punch fall outside it, misclassifying a
+  // genuine night-shift worker as Did Not Report despite clocking in and
+  // out normally. Adjustments are deliberately excluded from this fix —
+  // their shiftStart/shiftEnd are already full datetimes that correctly
+  // say which day the shift ends, so they never have this problem.
+  if (start && end && !fromIsAdjustment && !toIsAdjustment && end <= start) {
+    end = new Date(end.getTime() + 24 * 60 * 60 * 1000);
+  }
+
   return { start, end };
 }
 
@@ -868,8 +970,14 @@ async function computeReportsBetweenDates(rangeStart, rangeEnd) {
 }
 
 async function computeReportsForDateRange(numDays) {
+  // Clamped to the same bound as the custom-range path below — without
+  // this, a mistyped or stale-bookmarked ?days= (e.g. ?days=100000)
+  // builds that many day objects and runs a full classification pass
+  // for every one of them, synchronously, blocking the event loop long
+  // enough to fail the health check and restart the container.
+  const clampedDays = Math.min(Math.max(numDays, 1), MAX_CUSTOM_RANGE_DAYS);
   const now = new Date();
-  const rangeStart = new Date(now.getTime() - (numDays - 1) * 24 * 60 * 60 * 1000);
+  const rangeStart = new Date(now.getTime() - (clampedDays - 1) * 24 * 60 * 60 * 1000);
   return computeReportsBetweenDates(rangeStart, now);
 }
 

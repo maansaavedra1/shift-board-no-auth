@@ -10,13 +10,13 @@
  * See docker-compose.yml.
  *
  * SECURITY NOTE — read this before relying on it:
- * This version of the app has NO login of any kind (see main README).
- * That means the endpoints that read/write this file (GET and POST
- * /api/settings in server.js) are also unprotected — anyone who can
- * reach this server can view masked settings status and, more
- * importantly, OVERWRITE the credentials being used. There is nothing
- * stopping that in this version. If that's not acceptable, this needs
- * some form of access control in front of it before real use.
+ * A full login system now protects this file's endpoints (GET and POST
+ * /api/settings in server.js both sit behind requireSession — see
+ * auth-store.js and README's "Authentication" section). This comment
+ * used to say the opposite — that the app had no login at all and these
+ * routes were unprotected — which was true in an earlier version but has
+ * been wrong since login was added, and would badly mislead anyone
+ * reasoning about credential exposure from this file alone.
  *
  * SPROUT_BASE (the API's actual domain) is deliberately NOT stored or
  * settable here — it stays controlled only by the SPROUT_BASE
@@ -46,14 +46,14 @@ const EDITABLE_FIELDS = ['SPROUT_CLIENT_ID', 'SPROUT_CLIENT_SECRET', 'SPROUT_SUB
 const DEPLOYMENT_LOCKED = EDITABLE_FIELDS.every((key) => !!process.env[key]);
 
 function loadConfig() {
-  try {
-    if (!fs.existsSync(CONFIG_PATH)) return null;
-    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
-    return JSON.parse(raw);
-  } catch (err) {
-    console.error('Could not read saved Sprout settings (' + CONFIG_PATH + '):', err.message);
-    return null;
-  }
+  if (!fs.existsSync(CONFIG_PATH)) return null;
+  // Deliberately not caught here, same reasoning as auth-store.js's
+  // loadAccounts — a file that exists but fails to parse is genuinely
+  // different from "nothing saved yet", and saveConfig below needs to
+  // be able to tell them apart rather than silently merging new values
+  // into an empty object and overwriting whatever was actually there.
+  const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+  return JSON.parse(raw);
 }
 
 // Applies a saved/just-submitted config to process.env so sprout.js picks
@@ -77,10 +77,21 @@ function initFromDisk() {
     console.log('Sprout credentials are deployment-locked (set via environment variables) — settings screen is read-only.');
     return;
   }
-  const saved = loadConfig();
-  if (saved) {
-    applyConfigToEnv(saved);
-    console.log('Loaded saved Sprout settings from ' + CONFIG_PATH);
+  // Wrapped in try/catch specifically because this runs once at server
+  // startup — loadConfig now throws on a genuinely corrupt (not just
+  // missing) file, and a corrupt saved-settings file should never
+  // prevent the whole server from starting. Falling back to
+  // env-var-only behavior and logging clearly beats an unbootable
+  // container.
+  try {
+    const saved = loadConfig();
+    if (saved) {
+      applyConfigToEnv(saved);
+      console.log('Loaded saved Sprout settings from ' + CONFIG_PATH);
+    }
+  } catch (err) {
+    console.error('Saved Sprout settings file exists but could not be read (' + CONFIG_PATH + '):', err.message);
+    console.error('Falling back to environment-variable credentials only. The settings screen will overwrite this file on next save.');
   }
 }
 
@@ -100,7 +111,13 @@ function saveConfig(newValues) {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2));
+  // Written to a temp file and renamed into place — rename is atomic on
+  // the same filesystem, so a crash mid-write leaves either the old
+  // complete file or the new complete file, never a half-written,
+  // corrupt one.
+  const tempPath = `${CONFIG_PATH}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(merged, null, 2));
+  fs.renameSync(tempPath, CONFIG_PATH);
   applyConfigToEnv(merged);
   return merged;
 }

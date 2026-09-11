@@ -505,8 +505,8 @@
     <div id="loginForm">
       <div class="auth-title">Shift Board Login</div>
       <div class="auth-subtitle">Sign in with your System ID.</div>
-      <input type="text" id="loginSystemId" placeholder="System ID" autocomplete="username">
-      <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
+      <input type="text" id="loginSystemId" placeholder="Enter your System ID" autocomplete="username">
+      <input type="password" id="loginPassword" placeholder="Enter your password" autocomplete="current-password">
       <button class="auth-submit" id="loginSubmitBtn">Log In</button>
       <div class="auth-toggle">Not registered yet? <a id="showRegisterLink">Register</a></div>
     </div>
@@ -514,7 +514,7 @@
     <div id="registerForm" style="display:none;">
       <div class="auth-title">Register</div>
       <div class="auth-subtitle">Only approved System IDs can register. Yours is checked against the current Sprout employee list.</div>
-      <input type="text" id="registerSystemId" placeholder="System ID" autocomplete="username">
+      <input type="text" id="registerSystemId" placeholder="Enter your System ID" autocomplete="username">
       <input type="password" id="registerPassword" placeholder="Choose a password (min. 8 characters)" autocomplete="new-password">
       <input type="password" id="registerPasswordConfirm" placeholder="Confirm password" autocomplete="new-password">
       <button class="auth-submit" id="registerSubmitBtn">Register</button>
@@ -589,7 +589,7 @@
     <div id="resetAdminError" class="banner error" style="display:none;"></div>
     <div id="resetAdminSuccess" class="banner info" style="display:none;"></div>
 
-    <input type="text" id="resetAdminSystemId" placeholder="Their System ID" inputmode="numeric" pattern="[0-9]*">
+    <input type="text" id="resetAdminSystemId" placeholder="Enter the System ID to reset" inputmode="numeric" pattern="[0-9]*">
     <button id="resetAdminBtn">Reset This Account</button>
 
     <div style="font-size: 11px; opacity: 0.6; margin-top: 14px; line-height: 1.5;">
@@ -858,9 +858,40 @@
   // recovering from an error) — once it's populated at least one time,
   // this returns null and no banner shows, since the data is simply
   // working normally from then on (possibly a few minutes old, not "down").
+  // The cycle takes ~30 minutes at Firstmac's employee count (~359), so
+  // 2 hours means cycles have genuinely stopped completing, not just one
+  // running a bit long.
+  var CACHE_STALE_AFTER_MS = 2 * 60 * 60 * 1000;
+
+  function humanAge(ms) {
+    var totalMinutes = Math.round(ms / 60000);
+    var hours = Math.floor(totalMinutes / 60);
+    var minutes = totalMinutes % 60;
+    if (hours === 0) return minutes + ' minute' + (minutes === 1 ? '' : 's');
+    var hourPart = hours + ' hour' + (hours === 1 ? '' : 's');
+    if (minutes === 0) return hourPart;
+    return hourPart + ' ' + minutes + ' minute' + (minutes === 1 ? '' : 's');
+  }
+
   function scheduleAdjustmentCacheMessage(cache) {
     if (!cache) return null;
-    if (cache.lastRefreshedAt) return null; // has completed at least once — treat as normal, no banner
+    if (cache.lastRefreshedAt) {
+      // A cache that completed once used to be treated as permanently
+      // healthy, no matter how old the data actually got — a cycle that
+      // silently stopped completing (a stalled request, a crashed
+      // interval, anything) would keep showing the same reassuring
+      // "synced HH:MM:SS" timestamp forever, while Leave and Schedule
+      // Adjustments quietly read as "none" for everyone — indistinguishable
+      // from a genuinely quiet day. This is exactly the failure the Apps
+      // Script port hit for hours before anyone noticed.
+      var age = Date.now() - new Date(cache.lastRefreshedAt).getTime();
+      if (age > CACHE_STALE_AFTER_MS) {
+        return 'Leave and schedule adjustments last updated ' + humanAge(age) + ' ago, and should '
+          + 'refresh every ~30 minutes. Until this catches up they may show as "none" for everyone '
+          + '— which looks the same as a quiet day.';
+      }
+      return null;
+    }
     if (cache.lastError) {
       return 'Schedule adjustments could not load yet (' + cache.lastError + ') — will keep retrying in the background.';
     }
@@ -874,14 +905,26 @@
   // just flagging the one-time cold-start wait.
   function renderScheduleAdjustmentNote(cache) {
     var el = document.getElementById('scheduleAdjustmentNote');
-    if (!cache) { el.textContent = ''; return; }
+    if (!cache) { el.textContent = ''; el.style.color = ''; el.style.fontWeight = ''; return; }
     if (cache.lastRefreshedAt) {
       var t = new Date(cache.lastRefreshedAt);
-      el.textContent = '· Schedule adjustments synced ' + t.toLocaleTimeString('en-PH', { hour12: false });
+      var age = Date.now() - t.getTime();
+      var isStale = age > CACHE_STALE_AFTER_MS;
+      el.textContent = '· Schedule adjustments synced ' + t.toLocaleTimeString('en-PH', { hour12: false })
+        + (isStale ? ' (stale — ' + humanAge(age) + ' ago)' : '');
+      // The whole point of flagging staleness is that it should stop
+      // looking like normal, healthy data — muted grey (the default)
+      // reads as "everything's fine" regardless of what the text says.
+      el.style.color = isStale ? 'var(--late)' : '';
+      el.style.fontWeight = isStale ? '600' : '';
     } else if (cache.isRefreshing) {
       el.textContent = '· Schedule adjustments syncing for the first time…';
+      el.style.color = '';
+      el.style.fontWeight = '';
     } else {
       el.textContent = '';
+      el.style.color = '';
+      el.style.fontWeight = '';
     }
   }
 
@@ -1070,9 +1113,9 @@
     } else if (status === 'onLeave') {
       var leaveDateText = '';
       if (e.leaveFrom && e.leaveTo) {
-        var fromDisp = formatDateKeyForDisplay(e.leaveFrom);
-        var toDisp = formatDateKeyForDisplay(e.leaveTo);
-        leaveDateText = (e.leaveFrom === e.leaveTo) ? fromDisp : (fromDisp + ' – ' + toDisp);
+        var fromDisp = formatDateKeyForDisplay(e.leaveFrom) + (e.leaveFromIsApproximate ? ' or earlier' : '');
+        var toDisp = formatDateKeyForDisplay(e.leaveTo) + (e.leaveToIsApproximate ? ' or later' : '');
+        leaveDateText = (e.leaveFrom === e.leaveTo && !e.leaveFromIsApproximate && !e.leaveToIsApproximate) ? fromDisp : (fromDisp + ' – ' + toDisp);
       }
       var leaveLabel = leaveDateText ? ('On leave (' + leaveDateText + ')') : 'On approved leave';
       var range = escapeHtml(leaveLabel);
@@ -1081,7 +1124,7 @@
       // gets parentheses + red, unlike the plain log times shown elsewhere.
       result = timesHtml ? (range + ' <span style="color:var(--late);">(' + timesHtml + ')</span>') : range;
     } else if (status === 'restDay') {
-      var restLabel = escapeHtml('On rest day');
+      var restLabel = escapeHtml(e.holidayName ? ('Holiday (' + e.holidayName + ')') : 'On rest day');
       result = timesHtml ? (restLabel + ' <span style="color:var(--late);">(' + timesHtml + ')</span>') : restLabel;
     } else {
       result = timesHtml || '—';
@@ -1108,14 +1151,15 @@
     } else if (status === 'onLeave') {
       var leaveDateText2 = '';
       if (e.leaveFrom && e.leaveTo) {
-        var fromDisp2 = formatDateKeyForDisplay(e.leaveFrom);
-        var toDisp2 = formatDateKeyForDisplay(e.leaveTo);
-        leaveDateText2 = (e.leaveFrom === e.leaveTo) ? fromDisp2 : (fromDisp2 + ' – ' + toDisp2);
+        var fromDisp2 = formatDateKeyForDisplay(e.leaveFrom) + (e.leaveFromIsApproximate ? ' or earlier' : '');
+        var toDisp2 = formatDateKeyForDisplay(e.leaveTo) + (e.leaveToIsApproximate ? ' or later' : '');
+        leaveDateText2 = (e.leaveFrom === e.leaveTo && !e.leaveFromIsApproximate && !e.leaveToIsApproximate) ? fromDisp2 : (fromDisp2 + ' – ' + toDisp2);
       }
       var range = leaveDateText2 ? ('On leave (' + leaveDateText2 + ')') : 'On approved leave';
       result = times ? (range + ' (' + times + ')') : range;
     } else if (status === 'restDay') {
-      result = times ? ('On rest day (' + times + ')') : 'On rest day';
+      var restLabel2 = e.holidayName ? ('Holiday (' + e.holidayName + ')') : 'On rest day';
+      result = times ? (restLabel2 + ' (' + times + ')') : restLabel2;
     } else {
       result = times || '—';
     }

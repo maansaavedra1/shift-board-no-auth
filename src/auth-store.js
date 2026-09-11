@@ -42,18 +42,27 @@ function getAllowlist() {
 }
 
 function loadAccounts() {
-  try {
-    if (!fs.existsSync(ACCOUNTS_PATH)) return {};
-    return JSON.parse(fs.readFileSync(ACCOUNTS_PATH, 'utf8'));
-  } catch (err) {
-    console.error('Could not read admin accounts (' + ACCOUNTS_PATH + '):', err.message);
-    return {};
-  }
+  if (!fs.existsSync(ACCOUNTS_PATH)) return {};
+  // Deliberately NOT caught here — a file that exists but fails to
+  // parse (e.g. truncated by a crash mid-write) is a genuinely
+  // different situation from "no accounts yet", and callers need to be
+  // able to tell them apart. Silently returning {} for both meant a
+  // corrupt file looked identical to a fresh install — and the next
+  // registration would then write a file containing only that one
+  // account, permanently losing everyone else who was in the corrupted
+  // file but unreadable.
+  return JSON.parse(fs.readFileSync(ACCOUNTS_PATH, 'utf8'));
 }
 
 function saveAccounts(accounts) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(ACCOUNTS_PATH, JSON.stringify(accounts, null, 2));
+  // Written to a temp file and renamed into place, rather than written
+  // directly — rename is atomic on the same filesystem, so a crash
+  // mid-write leaves either the old complete file or the new complete
+  // file, never a half-written, corrupt one.
+  const tempPath = `${ACCOUNTS_PATH}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(accounts, null, 2));
+  fs.renameSync(tempPath, ACCOUNTS_PATH);
 }
 
 // Confirms a System ID corresponds to a real, currently-returned Sprout
@@ -68,6 +77,16 @@ function register(systemId, password, employees) {
   systemId = String(systemId).trim();
   if (!systemId || !password) {
     throw new Error('System ID and password are both required.');
+  }
+  // Session tokens are "<systemId>.<expiry>.<signature>" — a System ID
+  // containing a "." would split into the wrong number of parts and
+  // silently fail verification on every single request afterward. No
+  // real Sprout System ID has ever contained one (they're numeric), but
+  // the failure mode this guards against — login appears to succeed,
+  // then every subsequent request 401s for no visible reason — is
+  // disproportionately confusing for what a one-line check prevents.
+  if (systemId.includes('.')) {
+    throw new Error('System ID cannot contain a period.');
   }
   if (password.length < 8) {
     throw new Error('Password must be at least 8 characters.');
@@ -89,12 +108,29 @@ function register(systemId, password, employees) {
   saveAccounts(accounts);
 }
 
-function verifyLogin(systemId, password) {
+async function verifyLogin(systemId, password) {
   systemId = String(systemId).trim();
+  // Re-checked on every login, not just at registration — removing
+  // someone from the allowlist and redeploying should actually revoke
+  // them, not just block new signups. See requireSession below for the
+  // other half of this (an *existing* session also needs to stop
+  // working, not just future logins).
+  if (!getAllowlist().includes(systemId)) return false;
   const accounts = loadAccounts();
   const account = accounts[systemId];
   if (!account) return false;
-  return bcrypt.compareSync(password || '', account.passwordHash);
+  // Async, not compareSync — bcrypt is deliberately slow (by design, to
+  // resist cracking), but the sync version holds Node's single thread
+  // for the full ~150-300ms with no yielding. A handful of login
+  // attempts per second is enough to starve every other request,
+  // including the health check. The async version offloads the actual
+  // hashing to bcrypt's internal thread pool instead.
+  return new Promise((resolve, reject) => {
+    bcrypt.compare(password || '', account.passwordHash, (err, result) => {
+      if (err) return reject(err);
+      resolve(result);
+    });
+  });
 }
 
 function accountExists(systemId) {
@@ -159,6 +195,24 @@ function requireSession(req, res, next) {
   const session = verifySessionToken(req.cookies && req.cookies[SESSION_COOKIE_NAME]);
   if (!session) {
     return res.status(401).json({ ok: false, error: 'Not logged in.' });
+  }
+  try {
+    // A valid, unexpired token alone isn't enough — sessions are
+    // stateless (no server-side store to invalidate directly), so
+    // without this check an admin removed from the allowlist, or reset
+    // via "Reset an admin account", would keep full access on their
+    // existing cookie for up to the full 12-hour TTL. This makes removal
+    // and reset actually take effect immediately, on the very next
+    // request. Wrapped in try/catch since accountExists now reads a file
+    // that can throw on genuinely corrupt (not just missing) data — this
+    // runs on every protected request, so it needs a clean JSON error
+    // rather than relying on Express's default HTML error page.
+    if (!getAllowlist().includes(session.systemId) || !accountExists(session.systemId)) {
+      return res.status(401).json({ ok: false, error: 'Not logged in.' });
+    }
+  } catch (err) {
+    console.error('Session check failed:', err.message);
+    return res.status(500).json({ ok: false, error: 'Temporarily unavailable. Please try again shortly.' });
   }
   req.systemId = session.systemId;
   next();

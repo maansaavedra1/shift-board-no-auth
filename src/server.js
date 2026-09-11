@@ -8,15 +8,47 @@ const authStore = require('./auth-store');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Needed so req.secure correctly reflects the original client connection
-// (Azure Container Apps — and most cloud hosts — terminate HTTPS at an
-// edge/proxy layer and forward plain HTTP internally; without this,
-// req.secure would always read false even on a real HTTPS deployment,
-// and session cookies would never get their `secure` flag set).
+// Makes req.ip correctly reflect the original client's address rather
+// than Azure's internal proxy hop (Azure Container Apps — and most cloud
+// hosts — terminate HTTPS at an edge/proxy layer and forward plain HTTP
+// internally). This is what the rate limiter below keys on; without it,
+// every request would appear to come from the same internal proxy
+// address, and the per-IP limit would apply to all users combined
+// rather than each one individually. (The cookie's `secure` flag below
+// is hardcoded rather than read from req.secure, so this setting isn't
+// actually needed for that anymore — kept for the rate limiter instead.)
 app.set('trust proxy', 1);
 
 app.use(express.json());
 app.use(cookieParser());
+
+// Simple, dependency-free rate limiter for the auth routes specifically
+// — register() does a handful of real Sprout API calls before this
+// existed, and login() runs bcrypt (deliberately slow, ~150-300ms per
+// attempt) on Node's single thread with no yielding. Either one looped
+// by a script, or an internet scanner that found the hostname, can
+// amplify into real load on Sprout's rate limit or block the event loop
+// entirely for real users. Keyed by IP (trust proxy above makes req.ip
+// reflect the real client through Azure's edge layer, not the proxy).
+const authAttempts = new Map(); // ip -> { count, windowStartedAt }
+const AUTH_RATE_LIMIT_MAX = 10;
+const AUTH_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+
+function authRateLimiter(req, res, next) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  const entry = authAttempts.get(ip);
+  if (!entry || now - entry.windowStartedAt > AUTH_RATE_LIMIT_WINDOW_MS) {
+    authAttempts.set(ip, { count: 1, windowStartedAt: now });
+    return next();
+  }
+  entry.count++;
+  if (entry.count > AUTH_RATE_LIMIT_MAX) {
+    return res.status(429).json({ ok: false, error: 'Too many attempts. Please wait a minute and try again.' });
+  }
+  next();
+}
+app.use('/api/auth', authRateLimiter);
 
 // -----------------------------------------------------------------------
 // Login required for everything below except /health and the static
@@ -74,7 +106,7 @@ function setSessionCookie(res, systemId) {
   const token = authStore.createSessionToken(systemId);
   res.cookie(authStore.SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: true, // req.secure is reliable now that 'trust proxy' is set; plain-HTTP local testing still works since browsers only enforce this over an actual HTTPS page
+    secure: true, // Hardcoded, not read from req.secure — this app is only ever served over HTTPS in any real deployment, so there's no case where this should be false. Browsers only enforce the `secure` flag over an actual HTTPS page, so plain-HTTP local testing still works fine despite this being always-true.
     sameSite: 'lax',
     maxAge: authStore.SESSION_TTL_MS
   });
@@ -88,23 +120,54 @@ app.get('/api/auth/session', (req, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
   const { systemId, password } = req.body || {};
+  const genericError = 'Registration failed. Check your System ID, or contact your administrator.';
   try {
+    // Checked here, before anything else — a cheap, local, in-memory
+    // check that costs nothing, deliberately ahead of the expensive
+    // Sprout fetch below. Without this, any input (a scanner, a typo, a
+    // scripted loop) triggers a handful of real Sprout API calls before
+    // ever getting validated — amplifying junk traffic into load on
+    // Sprout's own rate limit, on top of the background sync already
+    // running continuously.
+    const trimmedId = String(systemId || '').trim();
+    if (!trimmedId || !authStore.getAllowlist().includes(trimmedId)) {
+      return res.status(400).json({ ok: false, error: genericError });
+    }
     const employees = await getEmployees();
     authStore.register(systemId, password, employees);
-    setSessionCookie(res, String(systemId).trim()); // auto-login right after registering
+    setSessionCookie(res, trimmedId); // auto-login right after registering
     res.json({ ok: true });
   } catch (err) {
-    res.status(400).json({ ok: false, error: err.message });
+    // Deliberately generic, not err.message — the previous version
+    // returned three distinct, verbatim error strings (not on the
+    // allowlist / doesn't match a Sprout employee / already registered),
+    // which lets anyone walk the numeric System ID space and learn
+    // exactly which IDs are allowlisted-but-unregistered — each one a
+    // free account waiting to be claimed. err.message could also
+    // surface a raw Sprout response body in some failure paths, which
+    // has no business reaching an unauthenticated caller either.
+    console.error('Registration failed:', err.message);
+    res.status(400).json({ ok: false, error: genericError });
   }
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { systemId, password } = req.body || {};
-  if (!authStore.verifyLogin(systemId, password)) {
-    return res.status(401).json({ ok: false, error: 'Incorrect System ID or password.' });
+  try {
+    if (!(await authStore.verifyLogin(systemId, password))) {
+      return res.status(401).json({ ok: false, error: 'Incorrect System ID or password.' });
+    }
+    setSessionCookie(res, String(systemId).trim());
+    res.json({ ok: true });
+  } catch (err) {
+    // Catches a corrupt accounts file (loadAccounts now throws on
+    // unparseable JSON rather than silently treating it as "no
+    // accounts") — without this try/catch, that throw would surface as
+    // an unhandled promise rejection from this async handler, since
+    // verifyLogin is itself async now (see its own comment for why).
+    console.error('Login failed:', err.message);
+    res.status(500).json({ ok: false, error: 'Login is temporarily unavailable. Please try again shortly.' });
   }
-  setSessionCookie(res, String(systemId).trim());
-  res.json({ ok: true });
 });
 
 app.post('/api/auth/logout', (req, res) => {
